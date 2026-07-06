@@ -25,15 +25,20 @@ A modern, cross-platform PDF reader and editor with an AI agent side panel.
 # Install Node dependencies
 npm install
 
-# Install Python backend
+# Install Python backend (one-time setup)
 npm run backend:install
 
-# Run backend
-npm run backend:dev
-
-# In another terminal, run the Electron app in dev mode
-npm run electron:dev
+# Start everything: Vite dev server + Electron window + Python backend
+npm run dev
 ```
+
+`npm run dev` is the only thing you run day-to-day. Electron's main process
+(`electron/main.ts`) spawns the Python backend itself as soon as the app
+window opens, so there's no separate backend process to start or keep
+running — one command, one window.
+
+`npm run backend:dev` exists only if you want to run the FastAPI backend
+standalone (e.g. to hit its HTTP API directly without the desktop app).
 
 ## Project structure
 

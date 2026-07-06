@@ -31,10 +31,12 @@ summarizing, merging, splitting, watermarking, and encryption.
 
 ## Commands
 
-- `npm run dev` — start Vite dev server for the React frontend.
-- `npm run electron:dev` — build and run Electron with the dev server.
-- `npm run backend:install` — install the Python backend in editable mode.
-- `npm run backend:dev` — run the Python backend directly.
+- `npm run backend:install` — install the Python backend in editable mode (one-time setup).
+- `npm run dev` — start everything: Vite dev server, Electron window, and the
+  Python backend (auto-spawned by `electron/main.ts`). This is the only
+  command needed day-to-day; there's no separate backend process to launch.
+- `npm run backend:dev` — run the Python backend standalone, without
+  Electron (useful for hitting the HTTP API directly).
 
 ## Files to know
 

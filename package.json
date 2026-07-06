@@ -12,7 +12,6 @@
     "build": "tsc && vite build && npm run build:electron",
     "build:electron": "tsc -p electron/tsconfig.json",
     "preview": "vite preview",
-    "electron:dev": "vite",
     "electron:preview": "npm run build && electron .",
     "backend:install": "cd backend && pip install -e .",
     "backend:dev": "cd backend && /usr/bin/python3 -m inkwell.server"
