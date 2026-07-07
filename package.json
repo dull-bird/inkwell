@@ -43,6 +43,18 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "backend",
+        "to": "backend",
+        "filter": [
+          "inkwell/**",
+          "pyproject.toml",
+          "!**/__pycache__/**",
+          "!**/*.pyc",
+          "!**/*.egg-info/**",
+          "!.venv/**"
+        ]
       }
     ],
     "extraMetadata": {

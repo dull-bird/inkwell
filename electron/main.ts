@@ -21,6 +21,7 @@ import { spawn, ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { AgentSession, type AgentEvent, type AgentKind, type AgentPromptOptions } from './agent.js';
+import { resolveBackendProcessConfig } from './backendProcessPath.js';
 import { NativePdfHostClient, type NativePdfCommandName } from './nativePdfBridge.js';
 import { PDF4QT_HOST_ENV, resolveNativePdfHostPath } from './nativePdfHostPath.js';
 
@@ -199,9 +200,23 @@ async function startBackend() {
   // Must run as `-m inkwell.server`, not as a bare script path: server.py uses
   // a relative import (`from . import pdf_engine`) that only resolves when
   // Python knows it's running inside the `inkwell` package.
-  backendProcess = spawn('/usr/bin/python3', ['-m', 'inkwell.server'], {
-    cwd: join(__dirname, '../backend'),
-    env: { ...process.env, INKWELL_PORT: String(backendPort), INKWELL_TOKEN: backendToken },
+  const backendConfig = resolveBackendProcessConfig({
+    isPackaged: app.isPackaged,
+    dirname: __dirname,
+    resourcesPath: process.resourcesPath,
+    env: process.env,
+  });
+
+  backendProcess = spawn(backendConfig.pythonExecutable, ['-m', backendConfig.moduleName], {
+    cwd: backendConfig.cwd,
+    env: {
+      ...process.env,
+      PYTHONPATH: [backendConfig.cwd, process.env.PYTHONPATH]
+        .filter(Boolean)
+        .join(process.platform === 'win32' ? ';' : ':'),
+      INKWELL_PORT: String(backendPort),
+      INKWELL_TOKEN: backendToken,
+    },
   });
 
   backendProcess.stdout?.on('data', (data) => {

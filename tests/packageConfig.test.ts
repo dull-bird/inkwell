@@ -22,19 +22,24 @@ test('configures Electron Builder platform targets', () => {
   assert.match(packageJson.build.artifactName, /\$\{arch\}/);
 });
 
-test('keeps packaging scope explicit while backend bundling is pending', () => {
+test('keeps packaging scope explicit for app shell and runtime resources', () => {
   assert.ok(packageJson.build.files.includes('dist/**'));
   assert.ok(packageJson.build.files.includes('dist-electron/**'));
   assert.ok(packageJson.build.extraMetadata.description.includes('PDF'));
   assert.equal(packageJson.build.directories.output, 'release');
 });
 
-test('packages native PDF4QT host resources when present', () => {
+test('packages runtime resources when present', () => {
   assert.deepEqual(packageJson.build.extraResources, [
     {
       from: 'native/dist',
       to: 'native/pdf4qt-host',
       filter: ['**/*'],
+    },
+    {
+      from: 'backend',
+      to: 'backend',
+      filter: ['inkwell/**', 'pyproject.toml', '!**/__pycache__/**', '!**/*.pyc', '!**/*.egg-info/**', '!.venv/**'],
     },
   ]);
 });

@@ -70,17 +70,20 @@ annotation model, and saved output behavior stay identical.
 
 ## Cross-Platform Packaging
 
-Electron Builder is configured first-pass targets:
+Electron Builder is configured with first-pass targets:
 
 - macOS: `dmg`, `zip`
 - Windows: `nsis`
 - Linux: `AppImage`, `deb`
 
-This is not yet a final distributable app because the Python backend is still a
-development process and PDF4QT is not linked into the native host. Production
-packaging still needs:
+Electron Builder now copies the Python backend source into app resources, and
+Electron resolves packaged backend paths through `process.resourcesPath`. This is
+still not a final distributable app because the Python runtime and Python
+dependencies are not bundled yet, and PDF4QT is not linked into the native host.
+Production packaging still needs:
 
-1. Bundle or replace the Python backend.
+1. Bundle a Python runtime and backend dependencies, or replace the Python
+   backend with native PDF4QT commands.
 2. Link the real PDF4QT adapter into `inkwell-pdf4qt-host`.
 3. Bundle staged native host binaries under Electron resources.
 4. Sign and notarize macOS builds.
