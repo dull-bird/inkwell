@@ -7,6 +7,7 @@ type PdfSessionExportMode = 'none' | 'reference' | 'copy';
 type NativePdfCoreMode = 'pdfjs-fallback' | 'pdf4qt-missing' | 'pdf4qt-ready';
 type NativePdfCommandName =
   | 'open_document'
+  | 'host_status'
   | 'document_info'
   | 'find_text'
   | 'preview_highlights'

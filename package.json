@@ -17,6 +17,10 @@
     "package:win": "npm run build && electron-builder --win",
     "package:linux": "npm run build && electron-builder --linux",
     "package:all": "npm run build && electron-builder -mwl",
+    "native:configure": "cmake -S native/pdf4qt-host -B native/build/pdf4qt-host",
+    "native:build": "cmake --build native/build/pdf4qt-host --config Release",
+    "native:stage": "node scripts/stage-native-host.mjs",
+    "native:package": "npm run native:configure && npm run native:build && npm run native:stage",
     "backend:install": "cd backend && /usr/bin/python3 -m pip install -e .",
     "backend:dev": "cd backend && /usr/bin/python3 -m inkwell.server"
   },
@@ -31,6 +35,15 @@
       "dist/**",
       "dist-electron/**",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "native/dist",
+        "to": "native/pdf4qt-host",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "extraMetadata": {
       "description": "Sparrow is a lightweight cross-platform AI PDF editor for reading, annotation, forms, signatures, and agent-assisted document work."

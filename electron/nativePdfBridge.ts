@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 
 export type NativePdfCommandName =
   | 'open_document'
+  | 'host_status'
   | 'document_info'
   | 'find_text'
   | 'preview_highlights'
@@ -16,6 +17,7 @@ export type NativePdfCommandName =
 
 export const ELECTRON_NATIVE_PDF_COMMANDS: NativePdfCommandName[] = [
   'open_document',
+  'host_status',
   'document_info',
   'find_text',
   'preview_highlights',

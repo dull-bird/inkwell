@@ -4,6 +4,10 @@ dist-electron/
 release/
 shared/*.js
 shared/*.d.ts
+native/build/
+native/dist/*
+!native/dist/
+!native/dist/.gitkeep
 backend/.venv/
 backend/**/__pycache__/
 backend/*.egg-info/

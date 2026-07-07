@@ -28,3 +28,13 @@ test('keeps packaging scope explicit while backend bundling is pending', () => {
   assert.ok(packageJson.build.extraMetadata.description.includes('PDF'));
   assert.equal(packageJson.build.directories.output, 'release');
 });
+
+test('packages native PDF4QT host resources when present', () => {
+  assert.deepEqual(packageJson.build.extraResources, [
+    {
+      from: 'native/dist',
+      to: 'native/pdf4qt-host',
+      filter: ['**/*'],
+    },
+  ]);
+});

@@ -22,6 +22,7 @@ import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { AgentSession, type AgentEvent, type AgentKind, type AgentPromptOptions } from './agent.js';
 import { NativePdfHostClient, type NativePdfCommandName } from './nativePdfBridge.js';
+import { PDF4QT_HOST_ENV, resolveNativePdfHostPath } from './nativePdfHostPath.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -48,7 +49,6 @@ process.on('unhandledRejection', (reason) => reportFatalToRenderer('unhandledRej
 // only ever learns it via IPC, never by reading the env directly, so a
 // compromised web page loaded in the renderer can't read it out of band.
 const backendToken = randomUUID();
-const PDF4QT_HOST_ENV = 'INKWELL_PDF4QT_HOST';
 
 let mainWindow: BrowserWindow | null = null;
 let backendProcess: ChildProcess | null = null;
@@ -70,24 +70,44 @@ interface NativeAgentSessionExportRequest {
   hasUnsavedPreviewOperations: boolean;
 }
 
-function getNativePdfCoreStatus() {
-  const hostPath = process.env[PDF4QT_HOST_ENV]?.trim();
-  if (hostPath && existsSync(hostPath)) {
-    return {
-      mode: 'pdf4qt-ready',
-      renderer: 'PDF4QT',
-      writeEngine: 'PDF4QT command bridge',
-      pdf4qt: { available: true, envVar: PDF4QT_HOST_ENV, hostPath },
-      message: 'PDF4QT native core ready.',
-    };
+async function getNativePdfCoreStatus() {
+  const host = resolveCurrentNativePdfHost();
+  if (host.available && host.hostPath) {
+    try {
+      const status = await getNativePdfHostClient().execute('host_status');
+      if (nativePdfHostHasLinkedAdapter(status)) {
+        return {
+          mode: 'pdf4qt-ready',
+          renderer: 'PDF4QT',
+          writeEngine: 'PDF4QT command bridge',
+          pdf4qt: { available: true, envVar: PDF4QT_HOST_ENV, hostPath: host.hostPath },
+          message: host.message,
+        };
+      }
+      return {
+        mode: 'pdf4qt-missing',
+        renderer: 'pdf.js',
+        writeEngine: 'PyMuPDF',
+        pdf4qt: { available: false, envVar: PDF4QT_HOST_ENV, hostPath: host.hostPath },
+        message: 'Native PDF host found, but the PDF4QT adapter is not linked. Falling back to pdf.js and PyMuPDF.',
+      };
+    } catch (error) {
+      return {
+        mode: 'pdf4qt-missing',
+        renderer: 'pdf.js',
+        writeEngine: 'PyMuPDF',
+        pdf4qt: { available: false, envVar: PDF4QT_HOST_ENV, hostPath: host.hostPath },
+        message: `Native PDF host is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
   }
-  if (hostPath) {
+  if (host.source === 'environment' && host.hostPath) {
     return {
       mode: 'pdf4qt-missing',
       renderer: 'pdf.js',
       writeEngine: 'PyMuPDF',
-      pdf4qt: { available: false, envVar: PDF4QT_HOST_ENV, hostPath },
-      message: `PDF4QT host configured but unavailable: ${hostPath}`,
+      pdf4qt: { available: false, envVar: PDF4QT_HOST_ENV, hostPath: host.hostPath },
+      message: host.message,
     };
   }
   return {
@@ -95,16 +115,35 @@ function getNativePdfCoreStatus() {
     renderer: 'pdf.js',
     writeEngine: 'PyMuPDF',
     pdf4qt: { available: false, envVar: PDF4QT_HOST_ENV },
-    message: `PDF4QT host not configured. Set ${PDF4QT_HOST_ENV} to test the native core bridge.`,
+    message: host.message,
   };
 }
 
+function nativePdfHostHasLinkedAdapter(status: unknown): boolean {
+  return (
+    typeof status === 'object' &&
+    status !== null &&
+    'pdf4qt_adapter' in status &&
+    (status as { pdf4qt_adapter?: unknown }).pdf4qt_adapter === true
+  );
+}
+
+function resolveCurrentNativePdfHost() {
+  return resolveNativePdfHostPath({
+    envHostPath: process.env[PDF4QT_HOST_ENV],
+    resourcesPath: process.resourcesPath,
+    platform: process.platform,
+    arch: process.arch,
+    exists: existsSync,
+  });
+}
+
 function getNativePdfHostClient(): NativePdfHostClient {
-  const hostPath = process.env[PDF4QT_HOST_ENV]?.trim();
-  if (!hostPath || !existsSync(hostPath)) {
-    throw new Error(`PDF4QT host is not available. Set ${PDF4QT_HOST_ENV} to a valid host executable.`);
+  const host = resolveCurrentNativePdfHost();
+  if (!host.available || !host.hostPath) {
+    throw new Error(host.message);
   }
-  if (!nativePdfHostClient) nativePdfHostClient = new NativePdfHostClient(hostPath);
+  if (!nativePdfHostClient) nativePdfHostClient = new NativePdfHostClient(host.hostPath);
   return nativePdfHostClient;
 }
 

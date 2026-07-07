@@ -12,6 +12,7 @@ test('defines the first PDF4QT host command surface', () => {
     NATIVE_PDF_COMMANDS.map((command) => command.name),
     [
       'open_document',
+      'host_status',
       'document_info',
       'find_text',
       'preview_highlights',
@@ -28,6 +29,7 @@ test('defines the first PDF4QT host command surface', () => {
 
 test('distinguishes read-only commands from mutating commands', () => {
   assert.equal(nativePdfCommandChangesDocument('document_info'), false);
+  assert.equal(nativePdfCommandChangesDocument('host_status'), false);
   assert.equal(nativePdfCommandChangesDocument('find_text'), false);
   assert.equal(nativePdfCommandChangesDocument('preview_highlights'), false);
   assert.equal(nativePdfCommandChangesDocument('read_form_fields'), false);

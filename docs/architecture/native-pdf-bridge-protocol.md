@@ -28,9 +28,11 @@ The host returns one line with the same `id` and either `result` or `error`.
   undo/redo.
 - Renderer ACP tools should call the same commands so manual edits and AI edits
   use one operation model.
+- Electron uses `host_status` to distinguish a runnable scaffold host from a
+  host with the real PDF4QT adapter linked.
 
 ## Fallback
 
-If `INKWELL_PDF4QT_HOST` is missing or points to a non-existent executable,
-Sparrow continues using pdf.js rendering and PyMuPDF writes. The UI reports this
-explicitly in the Native Core panel.
+If no bundled host exists and `INKWELL_PDF4QT_HOST` is missing or points to a
+non-existent executable, Sparrow continues using pdf.js rendering and PyMuPDF
+writes. The UI reports this explicitly in the Native Core panel.

@@ -1,5 +1,6 @@
 export type NativePdfCommandName =
   | 'open_document'
+  | 'host_status'
   | 'document_info'
   | 'find_text'
   | 'preview_highlights'
@@ -22,6 +23,12 @@ export const NATIVE_PDF_COMMANDS: NativePdfCommandSpec[] = [
   {
     name: 'open_document',
     description: 'Open a PDF in the native host without mutating it.',
+    changesDocument: false,
+    transport: 'json-rpc',
+  },
+  {
+    name: 'host_status',
+    description: 'Return native host protocol version and whether the PDF4QT adapter is linked.',
     changesDocument: false,
     transport: 'json-rpc',
   },
