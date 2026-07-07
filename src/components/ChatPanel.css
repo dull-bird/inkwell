@@ -421,11 +421,12 @@
 
 .composer-actions {
   display: flex;
+  gap: 6px;
   align-items: flex-end;
 }
 
 .composer-actions button {
-  min-width: 74px;
+  min-width: 66px;
   height: 34px;
   padding: 0 10px;
 }

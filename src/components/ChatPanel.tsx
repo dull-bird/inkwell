@@ -9,7 +9,9 @@ import {
   type AgentModeSelection,
   type AgentModelSelection,
 } from '../agentControls';
-import { shouldShowJumpToLatest, shouldStickToBottom } from '../chatScroll';
+import { buildSemanticHeadingHighlightPrompt } from '../agentPrompts';
+import { getComposerControlState } from '../chatComposerState';
+import { scheduleScrollToBottom, shouldShowJumpToLatest, shouldStickToBottom } from '../chatScroll';
 import type { DocumentAnalysis, SuggestedAction } from '../documentAnalysis';
 import { derivePdfToolAction } from '../pdfToolResults';
 import type { AiPermissionMode } from '../privacy';
@@ -52,7 +54,6 @@ interface ChatPanelProps {
   onEnableAi: () => void;
   onAnalyzeDocument: () => void;
   onFileOutput: (path: string) => void;
-  onRunSuggestion: (suggestion: SuggestedAction) => void;
   onSplitOutput: (outputDir: string, fileCount: number) => void;
   onPreviewHighlights: (operations: HighlightOperation[]) => void;
 }
@@ -111,7 +112,6 @@ export default function ChatPanel({
   onEnableAi,
   onAnalyzeDocument,
   onFileOutput,
-  onRunSuggestion,
   onSplitOutput,
   onPreviewHighlights,
 }: ChatPanelProps) {
@@ -179,7 +179,7 @@ export default function ChatPanel({
   const scrollToLatest = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    scheduleScrollToBottom(el);
     stickToBottomRef.current = true;
     setShowJumpToLatest(false);
   }, []);
@@ -368,15 +368,15 @@ export default function ChatPanel({
   }, [busy, canChat, externalPrompt, onExternalPromptConsumed, sendPrompt]);
 
   const runSuggestion = (suggestion: SuggestedAction) => {
-    if (suggestion.id === 'highlight-headings') {
-      onRunSuggestion(suggestion);
-      return;
-    }
+    const prompt =
+      suggestion.id === 'highlight-headings'
+        ? buildSemanticHeadingHighlightPrompt(activeDocumentTitle ?? 'current PDF')
+        : suggestion.prompt;
     if (suggestion.intent === 'research' && activeDocumentContext) {
-      sendPrompt(buildResearchPrompt(activeDocumentContext, suggestion.prompt));
+      sendPrompt(buildResearchPrompt(activeDocumentContext, prompt));
       return;
     }
-    sendPrompt(suggestion.prompt);
+    sendPrompt(prompt);
   };
 
   const summarizeWorkspace = () => {
@@ -395,6 +395,7 @@ export default function ChatPanel({
       ? 'Agent is responding. Stop it before sending another request.'
       : 'Ask about the current PDF...'
     : 'Enable AI for this PDF to chat';
+  const composerControls = getComposerControlState({ canChat, busy, activeTurnId, input });
 
   return (
     <aside className="sparrow-agent-panel">
@@ -552,19 +553,20 @@ export default function ChatPanel({
             }
           }}
           placeholder={composerPlaceholder}
-          disabled={!canChat || busy}
+          disabled={composerControls.textareaDisabled}
           rows={3}
         />
         <div className="composer-actions">
-          {busy ? (
-            <button className="stop-button" onClick={stopCurrentTurn} disabled={!activeTurnId}>
-              <Square size={14} />
-              Stop
-            </button>
-          ) : (
-            <button onClick={() => sendPrompt(input)} disabled={!canChat || !input.trim()}>
+          {composerControls.sendVisible && (
+            <button onClick={() => sendPrompt(input)} disabled={composerControls.sendDisabled}>
               <Send size={15} />
               Send
+            </button>
+          )}
+          {composerControls.stopVisible && (
+            <button className="stop-button" onClick={stopCurrentTurn} disabled={composerControls.stopDisabled}>
+              <Square size={14} />
+              Stop
             </button>
           )}
         </div>

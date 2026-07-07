@@ -25,8 +25,8 @@ import ChatPanel from './components/ChatPanel';
 import ErrorBoundary from './components/ErrorBoundary';
 import SparrowMark from './components/SparrowMark';
 import { buildAiBrushPrompt, validateAiBrushRun } from './aiBrush';
-import { routeLocalPdfCommand } from './commandRouter';
-import { analyzeDocumentText, type DocumentAnalysis, type SuggestedAction } from './documentAnalysis';
+import { buildSemanticHeadingHighlightPrompt } from './agentPrompts';
+import { analyzeDocumentText, type DocumentAnalysis } from './documentAnalysis';
 import { buildEncryptRequest, buildWatermarkRequest, describeFileOutput } from './pdfFileActions';
 import { parsePageRanges } from './pdfRanges';
 import { buildRemainingPageOrder, buildRotationMap } from './pageOperations';
@@ -60,10 +60,6 @@ interface SparrowDocument {
   analysis?: DocumentAnalysis;
   aiEnabled: boolean;
   error?: string;
-}
-
-interface HighlightResponse {
-  operations: HighlightOperation[];
 }
 
 interface ApplyResponse {
@@ -291,43 +287,23 @@ export default function App() {
     [activeDocument],
   );
 
-  const highlightHeadings = useCallback(async () => {
+  const highlightHeadings = useCallback(() => {
     if (!activeDocument) {
       setStatus('Open a PDF first.');
       return;
     }
-    setBusy(true);
-    try {
-      const result = await backendPost<HighlightResponse>('/highlight-headings', { path: activeDocument.path });
-      addHighlightBatch(result.operations);
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(false);
+    if (!aiAllowed) {
+      setRightSidebarVisible(true);
+      setStatus('高亮标题需要 AI 语义判断。请先为当前 PDF 开启 AI。');
+      return;
     }
-  }, [activeDocument, addHighlightBatch, backendPost]);
-
-  const highlightText = useCallback(
-    async (query: string) => {
-      if (!activeDocument) {
-        setStatus('Open a PDF first.');
-        return;
-      }
-      setBusy(true);
-      try {
-        const result = await backendPost<HighlightResponse>('/highlight', {
-          path: activeDocument.path,
-          query,
-        });
-        addHighlightBatch(result.operations);
-      } catch (error) {
-        setStatus(error instanceof Error ? error.message : String(error));
-      } finally {
-        setBusy(false);
-      }
-    },
-    [activeDocument, addHighlightBatch, backendPost],
-  );
+    setRightSidebarVisible(true);
+    setPendingAgentPrompt({
+      id: crypto.randomUUID(),
+      text: buildSemanticHeadingHighlightPrompt(activeDocument.title),
+    });
+    setStatus('已把 AI 高亮标题请求发送给小雀。');
+  }, [activeDocument, aiAllowed]);
 
   const undo = useCallback(() => {
     setUndoStack((current) => {
@@ -567,27 +543,6 @@ export default function App() {
     setStatus(`Agent split into ${fileCount} PDFs at ${outputDir}`);
   }, []);
 
-  const runSuggestedAction = useCallback(
-    (suggestion: SuggestedAction) => {
-      const command = routeLocalPdfCommand(suggestion.prompt);
-      if (command.kind === 'highlight-headings') {
-        void highlightHeadings();
-        return;
-      }
-      if (command.kind === 'highlight-text') {
-        void highlightText(command.query);
-        return;
-      }
-      if (!aiAllowed) {
-        setStatus('这条建议需要 AI。请先为当前 PDF 开启 AI。');
-        return;
-      }
-      setRightSidebarVisible(true);
-      setPendingAgentPrompt({ id: crypto.randomUUID(), text: suggestion.prompt });
-    },
-    [aiAllowed, highlightHeadings, highlightText],
-  );
-
   const activityItems: Array<{ id: SidebarView; label: string; icon: typeof FileText }> = [
     { id: 'files', label: 'Files', icon: FileText },
     { id: 'tools', label: 'Tools', icon: Highlighter },
@@ -805,10 +760,9 @@ export default function App() {
               onEnableAi={enableAiForActiveDocument}
               onAnalyzeDocument={analyzeActiveDocument}
               onFileOutput={handleFileOutput}
-              onRunSuggestion={runSuggestedAction}
-              onSplitOutput={handleSplitOutput}
-              onPreviewHighlights={addHighlightBatch}
-            />
+            onSplitOutput={handleSplitOutput}
+            onPreviewHighlights={addHighlightBatch}
+          />
           )}
         </div>
       </div>
@@ -924,7 +878,7 @@ function ToolsPane(props: ToolsPaneProps) {
           </button>
           <button onClick={props.onHighlightHeadings} disabled={disabled}>
             <Highlighter size={15} />
-            Headings
+            AI Headings
           </button>
           <button onClick={props.onUndo} disabled={props.undoDisabled || props.busy}>
             Undo

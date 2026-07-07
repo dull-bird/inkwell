@@ -11,7 +11,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Union
 from pydantic import BaseModel
 
 from . import pdf_engine
@@ -82,17 +82,34 @@ class MergeRequest(BaseModel):
     paths: List[str]
 
 
+class PageRangeRequest(BaseModel):
+    start: int
+    end: int
+
+
+PageRangeInput = Union[Tuple[int, int], PageRangeRequest]
+
+
 class SplitRequest(BaseModel):
     path: str
     output_dir: Optional[str] = None
     # 0-based inclusive ranges for internal callers.
     ranges: Optional[List[Tuple[int, int]]] = None
     # 1-based inclusive ranges for UI/agent-facing requests.
-    page_ranges: Optional[List[Tuple[int, int]]] = None
+    page_ranges: Optional[List[PageRangeInput]] = None
 
     def normalized_ranges(self) -> Optional[List[Tuple[int, int]]]:
         if self.page_ranges is not None:
-            return [(start - 1, end - 1) for start, end in self.page_ranges]
+            normalized: List[Tuple[int, int]] = []
+            for item in self.page_ranges:
+                if isinstance(item, PageRangeRequest):
+                    start, end = item.start, item.end
+                else:
+                    start, end = item
+                if start > end:
+                    raise ValueError(f"Invalid page range {start}-{end}")
+                normalized.append((start - 1, end - 1))
+            return normalized
         return self.ranges
 
 

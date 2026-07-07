@@ -23,3 +23,27 @@ export function shouldShowJumpToLatest(
 ): boolean {
   return !shouldStickToBottom(state, threshold);
 }
+
+export interface ScrollTarget {
+  scrollHeight: number;
+  scrollTop: number;
+}
+
+export type ScrollScheduler = (callback: () => void) => void;
+
+export function scheduleScrollToBottom(
+  element: ScrollTarget,
+  scheduler: ScrollScheduler = defaultScrollScheduler,
+): void {
+  scheduler(() => {
+    element.scrollTop = element.scrollHeight;
+  });
+}
+
+function defaultScrollScheduler(callback: () => void): void {
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(callback);
+    return;
+  }
+  queueMicrotask(callback);
+}

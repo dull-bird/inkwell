@@ -12,9 +12,7 @@ export function routeLocalPdfCommand(input: string): LocalPdfCommand {
   if (!trimmed) return { kind: 'empty' };
 
   const normalized = trimmed.toLowerCase();
-  if (includesAny(normalized, HIGHLIGHT_WORDS) && includesAny(normalized, HEADING_WORDS)) {
-    return { kind: 'highlight-headings' };
-  }
+  if (includesAny(normalized, HIGHLIGHT_WORDS) && includesAny(normalized, HEADING_WORDS)) return { kind: 'agent' };
 
   const query = extractHighlightQuery(trimmed);
   if (query) return { kind: 'highlight-text', query };

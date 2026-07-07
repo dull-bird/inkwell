@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { routeLocalPdfCommand } from '../src/commandRouter';
 
-test('routes heading highlight commands locally', () => {
-  assert.deepEqual(routeLocalPdfCommand('给每个标题高亮'), { kind: 'highlight-headings' });
-  assert.deepEqual(routeLocalPdfCommand('highlight every heading'), { kind: 'highlight-headings' });
+test('routes heading highlight commands to the agent for semantic analysis', () => {
+  assert.deepEqual(routeLocalPdfCommand('给每个标题高亮'), { kind: 'agent' });
+  assert.deepEqual(routeLocalPdfCommand('highlight every heading'), { kind: 'agent' });
 });
 
 test('routes specific text highlight commands locally', () => {

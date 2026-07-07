@@ -5,6 +5,7 @@ import { app } from 'electron';
 import { createACPProvider, acpTools } from '@mcpc-tech/acp-ai-provider';
 import { streamText, tool } from 'ai';
 import { z } from 'zod';
+import { normalizeAgentPageRanges, splitPdfPageRangesSchema } from './agentSplitRanges.js';
 import { extractInkwellToolEvent } from './agentToolEvents.js';
 
 // Mirrored (not imported) in shared/agent-types.ts so the renderer's
@@ -285,18 +286,21 @@ export class AgentSession {
       }),
       split_pdf: tool({
         description:
-          'Split a PDF into files. Omit page_ranges to split into one file per page. ' +
-          'Use page_ranges for user-facing 1-based inclusive ranges, e.g. [[2, 5]] creates one PDF with pages 2-5.',
+          'Split PDF into files. Omit page_ranges to split into one file per page. ' +
+          'Use object page_ranges, e.g. [{start: 2, end: 5}] creates one PDF pages 2-5.',
         inputSchema: z.object({
-          path: z.string().optional().describe('Absolute path to the PDF. Defaults to the currently open document.'),
-          output_dir: z.string().optional().describe('Directory to write pages to. Defaults to a temp directory.'),
-          page_ranges: z
-            .array(z.tuple([z.number().int().min(1), z.number().int().min(1)]))
+          path: z.string().optional().describe('Absolute path PDF. Defaults currently open document.'),
+          output_dir: z.string().optional().describe('Directory write pages to. Defaults temp directory.'),
+          page_ranges: splitPdfPageRangesSchema
             .optional()
-            .describe('1-based inclusive page ranges requested by user, e.g. [[1, 3], [7, 7]].'),
+            .describe('1-based inclusive page ranges requested by user, e.g. [{start: 1, end: 3}].'),
         }),
         execute: async ({ path, output_dir, page_ranges }) =>
-          textResult(await this.backendCall('/split', { body: { path: this.resolvePath(path), output_dir, page_ranges } })),
+          textResult(
+            await this.backendCall('/split', {
+              body: { path: this.resolvePath(path), output_dir, page_ranges: normalizeAgentPageRanges(page_ranges) },
+            }),
+          ),
       }),
       watermark_pdf: tool({
         description: 'Stamp a diagonal text watermark on every page, saved as "<name>_watermarked.pdf".',

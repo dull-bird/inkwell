@@ -38,7 +38,7 @@ const LABELS: Record<DocumentKind, string> = {
 const BASE_SUGGESTIONS: SuggestedAction[] = [
   { id: 'summarize', label: '总结全文', prompt: '请快速总结当前 PDF 的核心内容。', intent: 'read' },
   { id: 'extract-outline', label: '提取大纲', prompt: '请提取当前 PDF 的结构化大纲。', intent: 'read' },
-  { id: 'highlight-headings', label: '高亮标题', prompt: 'Highlight heading-like blocks in the current PDF preview layer.', intent: 'annotate' },
+  { id: 'highlight-headings', label: '高亮标题', prompt: '请先理解 PDF 结构，再高亮真正的章节标题和小节标题。', intent: 'annotate' },
 ];
 
 const SUGGESTIONS_BY_KIND: Record<DocumentKind, SuggestedAction[]> = {
