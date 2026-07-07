@@ -1,129 +1,121 @@
-import { useCallback, useRef, useState } from 'react';
-import {
-  PdfLoader,
-  PdfHighlighter,
-  TextHighlight,
-  AreaHighlight,
-  useHighlightContainerContext,
-  usePdfHighlighterContext,
-  type Highlight,
-  type PdfHighlighterUtils,
-  type LTWHP,
-} from 'react-pdf-highlighter-plus';
-import 'react-pdf-highlighter-plus/style/style.css';
+import { useMemo, useState, type MouseEvent } from 'react';
+import { Document, Page, pdfjs } from 'react-pdf';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { clientPointToPdfPoint } from '../pdfCoordinates';
+import 'react-pdf/dist/Page/TextLayer.css';
+import 'react-pdf/dist/Page/AnnotationLayer.css';
+
+pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
+export interface PdfRect {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+export interface HighlightOperation {
+  id: string;
+  page: number;
+  rects: PdfRect[];
+  color: [number, number, number];
+  opacity?: number;
+  text?: string;
+}
+
+export interface CommentTarget {
+  page: number;
+  x: number;
+  y: number;
+}
 
 interface PdfViewerProps {
   url: string;
   token: string;
-  highlights: Highlight[];
-  onHighlightsChange: (highlights: Highlight[]) => void;
+  highlights: HighlightOperation[];
+  commentTarget?: CommentTarget | null;
+  onCommentTargetChange?: (target: CommentTarget) => void;
 }
 
-export default function PdfViewer({ url, token, highlights, onHighlightsChange }: PdfViewerProps) {
-  const [scale, setScale] = useState<number>(1);
-  const utilsRef = useRef<PdfHighlighterUtils | null>(null);
-
-  const deleteHighlight = useCallback(
-    (id: string) => onHighlightsChange(highlights.filter((h) => h.id !== id)),
-    [highlights, onHighlightsChange],
-  );
+export default function PdfViewer({ url, token, highlights, commentTarget, onCommentTargetChange }: PdfViewerProps) {
+  const [scale, setScale] = useState(1);
+  const [numPages, setNumPages] = useState(0);
+  const file = useMemo(() => ({ url }), [url]);
+  const options = useMemo(() => ({ httpHeaders: { 'X-Inkwell-Token': token } }), [token]);
 
   return (
-    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <div style={{ padding: 8, background: '#fff', borderBottom: '1px solid #ddd' }}>
+    <div className="pdf-viewer">
+      <div className="pdf-toolbar">
         <button onClick={() => setScale((s) => Math.max(0.5, +(s - 0.1).toFixed(2)))}>-</button>
-        <span style={{ margin: '0 12px' }}>{Math.round(scale * 100)}%</span>
+        <span>{Math.round(scale * 100)}%</span>
         <button onClick={() => setScale((s) => Math.min(3, +(s + 0.1).toFixed(2)))}>+</button>
-        <span style={{ marginLeft: 16, color: '#999', fontSize: 12 }}>
-          Select text to highlight &middot; Alt+drag for an area highlight
+        <span className="pdf-toolbar-status">
+          {highlights.length > 0 ? `${highlights.length} preview highlights` : 'Ready'}
         </span>
       </div>
-      <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
-        <PdfLoader document={url} httpHeaders={{ 'X-Inkwell-Token': token }}>
-          {(pdfDocument) => (
-            <PdfHighlighter
-              pdfDocument={pdfDocument}
-              highlights={highlights}
-              pdfScaleValue={scale}
-              onZoomChange={setScale}
-              enableAreaSelection={(event) => event.altKey}
-              utilsRef={(utils) => (utilsRef.current = utils)}
-              selectionTip={<AddHighlightTip onAdd={(h) => onHighlightsChange([h, ...highlights])} />}
-            >
-              <HighlightContainer highlights={highlights} onChange={onHighlightsChange} onDelete={deleteHighlight} />
-            </PdfHighlighter>
-          )}
-        </PdfLoader>
+      <div className="pdf-scroll">
+        <Document file={file} options={options} onLoadSuccess={(pdf) => setNumPages(pdf.numPages)}>
+          {Array.from({ length: numPages }, (_, index) => {
+            const pageNumber = index + 1;
+            const pageHighlights = highlights.filter((highlight) => highlight.page === index);
+            const pageCommentTarget = commentTarget?.page === index ? commentTarget : null;
+            const handleClick = (event: MouseEvent<HTMLDivElement>) => {
+              const point = clientPointToPdfPoint(event, event.currentTarget.getBoundingClientRect(), scale);
+              onCommentTargetChange?.({ page: index, x: point.x, y: point.y });
+            };
+            return (
+              <div className="pdf-page-wrap" key={pageNumber} onClick={handleClick}>
+                <Page pageNumber={pageNumber} scale={scale} renderAnnotationLayer renderTextLayer />
+                <HighlightOverlay highlights={pageHighlights} scale={scale} />
+                {pageCommentTarget && <CommentTargetOverlay target={pageCommentTarget} scale={scale} />}
+              </div>
+            );
+          })}
+        </Document>
       </div>
     </div>
   );
 }
 
-function AddHighlightTip({ onAdd }: { onAdd: (highlight: Highlight) => void }) {
-  const { getCurrentSelection, setTip } = usePdfHighlighterContext();
-
-  const confirm = () => {
-    const selection = getCurrentSelection();
-    if (!selection) return;
-    const ghost = selection.makeGhostHighlight();
-    onAdd({ id: crypto.randomUUID(), ...ghost });
-    setTip(null);
-    window.getSelection()?.removeAllRanges();
-  };
-
+function CommentTargetOverlay({ target, scale }: { target: CommentTarget; scale: number }) {
   return (
-    <button
-      onClick={confirm}
+    <div
+      className="comment-target"
       style={{
-        padding: '4px 10px',
-        borderRadius: 4,
-        border: '1px solid #ccc',
-        background: '#fff',
-        boxShadow: '0 1px 4px rgba(0,0,0,0.2)',
-        cursor: 'pointer',
+        left: target.x * scale,
+        top: target.y * scale,
       }}
+      title={`Comment at page ${target.page + 1}, ${Math.round(target.x)}, ${Math.round(target.y)}`}
     >
-      + Highlight
-    </button>
+      小
+    </div>
   );
 }
 
-interface HighlightContainerProps {
-  highlights: Highlight[];
-  onChange: (highlights: Highlight[]) => void;
-  onDelete: (id: string) => void;
-}
-
-function HighlightContainer({ highlights, onChange, onDelete }: HighlightContainerProps) {
-  const { highlight, isScrolledTo, viewportToScaled } = useHighlightContainerContext();
-
-  if (highlight.type === 'area') {
-    const handleAreaChange = (rect: LTWHP) => {
-      const scaled = viewportToScaled(rect);
-      onChange(
-        highlights.map((h) =>
-          h.id === highlight.id
-            ? { ...h, position: { ...h.position, boundingRect: scaled, rects: [] } }
-            : h,
-        ),
-      );
-    };
-
-    return (
-      <AreaHighlight
-        highlight={highlight as any}
-        isScrolledTo={isScrolledTo}
-        onChange={handleAreaChange}
-        onDelete={() => onDelete(highlight.id)}
-      />
-    );
-  }
-
+function HighlightOverlay({ highlights, scale }: { highlights: HighlightOperation[]; scale: number }) {
   return (
-    <TextHighlight
-      highlight={highlight as any}
-      isScrolledTo={isScrolledTo}
-      onDelete={() => onDelete(highlight.id)}
-    />
+    <div className="highlight-overlay">
+      {highlights.flatMap((highlight) =>
+        highlight.rects.map((rect, index) => {
+          const [r, g, b] = highlight.color;
+          return (
+            <div
+              key={`${highlight.id}-${index}`}
+              title={highlight.text}
+              className="preview-highlight"
+              style={{
+                left: rect.x0 * scale,
+                top: rect.y0 * scale,
+                width: Math.max(1, (rect.x1 - rect.x0) * scale),
+                height: Math.max(1, (rect.y1 - rect.y0) * scale),
+                background: `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${
+                  highlight.opacity ?? 0.25
+                })`,
+              }}
+            />
+          );
+        }),
+      )}
+    </div>
   );
 }

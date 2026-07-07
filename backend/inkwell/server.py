@@ -57,10 +57,20 @@ class ExtractTextRequest(BaseModel):
     page: Optional[int] = None
 
 
+class DocumentInfoRequest(BaseModel):
+    path: str
+
+
 class HighlightRequest(BaseModel):
     path: str
     query: str
     color: Tuple[float, float, float] = (1.0, 1.0, 0.0)
+
+
+class HighlightHeadingsRequest(BaseModel):
+    path: str
+    color: Tuple[float, float, float] = (1.0, 1.0, 0.0)
+    opacity: float = 0.25
 
 
 class ApplyRequest(BaseModel):
@@ -75,11 +85,29 @@ class MergeRequest(BaseModel):
 class SplitRequest(BaseModel):
     path: str
     output_dir: Optional[str] = None
+    # 0-based inclusive ranges for internal callers.
+    ranges: Optional[List[Tuple[int, int]]] = None
+    # 1-based inclusive ranges for UI/agent-facing requests.
+    page_ranges: Optional[List[Tuple[int, int]]] = None
+
+    def normalized_ranges(self) -> Optional[List[Tuple[int, int]]]:
+        if self.page_ranges is not None:
+            return [(start - 1, end - 1) for start, end in self.page_ranges]
+        return self.ranges
 
 
 class WatermarkRequest(BaseModel):
     path: str
     text: str
+
+
+class CommentRequest(BaseModel):
+    path: str
+    page: int
+    x: float
+    y: float
+    text: str
+    author: str = "Inkwell"
 
 
 class EncryptRequest(BaseModel):
@@ -126,6 +154,17 @@ def serve_pdf(path: str = Query(..., description="Absolute path to PDF file")) -
     return FileResponse(str(p), media_type=media_type or "application/pdf")
 
 
+def serialize_highlight_op(op: pdf_engine.HighlightOp) -> dict:
+    return {
+        "id": f"p{op.page}-{'-'.join(f'{r.x0:.1f},{r.y0:.1f},{r.x1:.1f},{r.y1:.1f}' for r in op.rects)}",
+        "page": op.page,
+        "rects": [{"x0": r.x0, "y0": r.y0, "x1": r.x1, "y1": r.y1} for r in op.rects],
+        "color": op.color,
+        "opacity": op.opacity,
+        "text": op.text,
+    }
+
+
 @app.post("/extract-text")
 def extract_text(req: ExtractTextRequest) -> JSONResponse:
     try:
@@ -135,22 +174,28 @@ def extract_text(req: ExtractTextRequest) -> JSONResponse:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/document-info")
+def document_info(req: DocumentInfoRequest) -> JSONResponse:
+    try:
+        return JSONResponse({"path": req.path, **pdf_engine.document_info(req.path)})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/highlight")
 def highlight(req: HighlightRequest) -> JSONResponse:
     try:
         ops = pdf_engine.highlight_text(req.path, req.query, req.color)
-        return JSONResponse({
-            "path": req.path,
-            "query": req.query,
-            "operations": [
-                {
-                    "page": op.page,
-                    "rects": [{"x0": r.x0, "y0": r.y0, "x1": r.x1, "y1": r.y1} for r in op.rects],
-                    "color": op.color,
-                }
-                for op in ops
-            ],
-        })
+        return JSONResponse({"path": req.path, "query": req.query, "operations": [serialize_highlight_op(op) for op in ops]})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/highlight-headings")
+def highlight_headings(req: HighlightHeadingsRequest) -> JSONResponse:
+    try:
+        ops = pdf_engine.detect_heading_highlights(req.path, req.color, req.opacity)
+        return JSONResponse({"path": req.path, "operations": [serialize_highlight_op(op) for op in ops]})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -165,6 +210,8 @@ def apply(req: ApplyRequest) -> JSONResponse:
                 page=op["page"],
                 rects=[pdf_engine.Rect(**r) for r in op["rects"]],
                 color=tuple(op["color"]),
+                opacity=op.get("opacity", 0.25),
+                text=op.get("text", ""),
             )
             for op in req.operations
         ]
@@ -188,7 +235,7 @@ def merge(req: MergeRequest) -> JSONResponse:
 def split(req: SplitRequest) -> JSONResponse:
     try:
         output_dir = req.output_dir or tempfile.mkdtemp()
-        files = pdf_engine.split_pdf(req.path, output_dir)
+        files = pdf_engine.split_pdf(req.path, output_dir, ranges=req.normalized_ranges())
         return JSONResponse({"output_dir": output_dir, "files": files})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -200,6 +247,24 @@ def watermark(req: WatermarkRequest) -> JSONResponse:
         src = Path(req.path)
         dst = src.with_stem(f"{src.stem}_watermarked")
         pdf_engine.add_watermark(src, dst, req.text)
+        return JSONResponse({"source": str(src), "output": str(dst)})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/comment")
+def comment(req: CommentRequest) -> JSONResponse:
+    try:
+        src = Path(req.path)
+        dst = src.with_stem(f"{src.stem}_commented")
+        pdf_engine.add_comment(
+            src,
+            dst,
+            page=req.page,
+            point=pdf_engine.Point(req.x, req.y),
+            text=req.text,
+            author=req.author,
+        )
         return JSONResponse({"source": str(src), "output": str(dst)})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

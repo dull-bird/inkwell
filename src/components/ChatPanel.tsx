@@ -1,256 +1,687 @@
-import { useEffect, useRef, useState } from 'react';
-import type { AgentKind } from '../../shared/agent-types';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ArrowDown, ChevronRight, Send, Shield, Sparkles, Square } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import type { AgentEvent, AgentKind, AgentReasoningLevel } from '../../shared/agent-types';
 import { AGENT_INFO } from '../../shared/agent-types';
+import {
+  buildAgentPromptOptions,
+  type AgentModeSelection,
+  type AgentModelSelection,
+} from '../agentControls';
+import { shouldShowJumpToLatest, shouldStickToBottom } from '../chatScroll';
+import type { DocumentAnalysis, SuggestedAction } from '../documentAnalysis';
+import { derivePdfToolAction } from '../pdfToolResults';
+import type { AiPermissionMode } from '../privacy';
+import { buildResearchPrompt } from '../researchContext';
+import { buildWorkspaceSummaryPrompt, type WorkspaceDocumentContext } from '../workspaceContext';
 import AgentLogo from './AgentLogo';
+import type { HighlightOperation } from './PdfViewer';
+import SparrowMark from './SparrowMark';
+import './ChatPanel.css';
 
-interface ToolActivity {
-  toolCallId: string;
-  toolName: string;
-  args: unknown;
-  result?: unknown;
-  done: boolean;
-}
+type Part =
+  | { kind: 'reasoning'; text: string }
+  | { kind: 'tool'; toolCallId: string; toolName: string; args: unknown; result?: unknown; done: boolean }
+  | { kind: 'text'; text: string };
 
 interface Message {
+  id: string;
   role: 'user' | 'agent' | 'error';
   text: string;
-  tools: ToolActivity[];
+  parts: Part[];
   streaming?: boolean;
+  stopped?: boolean;
+}
+
+interface PendingAgentPrompt {
+  id: string;
+  text: string;
 }
 
 interface ChatPanelProps {
+  activeDocumentTitle: string | null;
+  activeDocumentContext: WorkspaceDocumentContext | null;
+  analysis: DocumentAnalysis | null;
+  analysisStatus: 'idle' | 'analyzing' | 'ready' | 'error';
+  workspaceDocuments: WorkspaceDocumentContext[];
+  aiEnabled: boolean;
+  privacyMode: AiPermissionMode;
+  externalPrompt: PendingAgentPrompt | null;
+  onExternalPromptConsumed: (id: string) => void;
+  onEnableAi: () => void;
+  onAnalyzeDocument: () => void;
   onFileOutput: (path: string) => void;
+  onRunSuggestion: (suggestion: SuggestedAction) => void;
+  onSplitOutput: (outputDir: string, fileCount: number) => void;
+  onPreviewHighlights: (operations: HighlightOperation[]) => void;
 }
 
+type AgentStreamEvent = AgentEvent & { turnId?: string };
+
 const AGENT_KINDS: AgentKind[] = ['claude', 'codex', 'kimi'];
+const MODE_OPTIONS: Array<{ value: AgentModeSelection; label: string }> = [
+  { value: 'default', label: 'Agent default' },
+  { value: 'ask', label: 'Ask' },
+  { value: 'plan', label: 'Plan' },
+  { value: 'edit', label: 'Edit' },
+  { value: 'review', label: 'Review' },
+];
+const REASONING_OPTIONS: Array<{ value: AgentReasoningLevel; label: string }> = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+];
+
+function newId(): string {
+  return crypto.randomUUID();
+}
 
 function greeting(kind: AgentKind): Message {
   return {
+    id: newId(),
     role: 'agent',
-    text: `Hi, I'm ${AGENT_INFO[kind].label}. I can read, highlight, merge, split, watermark, or encrypt the PDF you have open — just ask.`,
-    tools: [],
+    text: '',
+    parts: [
+      {
+        kind: 'text',
+        text: `${AGENT_INFO[kind].label} connected. AI stays idle until you enable permission and send a request.`,
+      },
+    ],
   };
 }
 
-function safeStringify(value: unknown): string {
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return '[object]';
-  }
-}
+const initialMessages: Record<AgentKind, Message[]> = {
+  claude: [greeting('claude')],
+  codex: [greeting('codex')],
+  kimi: [greeting('kimi')],
+};
 
-export default function ChatPanel({ onFileOutput }: ChatPanelProps) {
+export default function ChatPanel({
+  activeDocumentTitle,
+  activeDocumentContext,
+  analysis,
+  analysisStatus,
+  workspaceDocuments,
+  aiEnabled,
+  privacyMode,
+  externalPrompt,
+  onExternalPromptConsumed,
+  onEnableAi,
+  onAnalyzeDocument,
+  onFileOutput,
+  onRunSuggestion,
+  onSplitOutput,
+  onPreviewHighlights,
+}: ChatPanelProps) {
   const [agentKind, setAgentKindState] = useState<AgentKind>('claude');
-  const [messagesByAgent, setMessagesByAgent] = useState<Record<AgentKind, Message[]>>({
-    claude: [greeting('claude')],
-    codex: [greeting('codex')],
-    kimi: [greeting('kimi')],
-  });
+  const [messagesByAgent, setMessagesByAgent] = useState<Record<AgentKind, Message[]>>(initialMessages);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
+  const [openParts, setOpenParts] = useState<Record<string, boolean>>({});
+  const [modelSelection, setModelSelection] = useState<AgentModelSelection>('default');
+  const [customModelId, setCustomModelId] = useState('');
+  const [modeSelection, setModeSelection] = useState<AgentModeSelection>('default');
+  const [reasoningLevel, setReasoningLevel] = useState<AgentReasoningLevel>('auto');
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+
   const agentKindRef = useRef(agentKind);
-  // Ref is fine for pointing at the *current* streaming message, but we guard
-  // against stale indices whenever we read it.
-  const streamingIndex = useRef<number | null>(null);
+  const activeTurnIdRef = useRef<string | null>(null);
+  const turnAgentByIdRef = useRef<Record<string, AgentKind>>({});
+  const stoppedTurnIdsRef = useRef<Set<string>>(new Set());
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottomRef = useRef(true);
+
+  const canChat = aiEnabled && Boolean(activeDocumentTitle);
+  const messages = messagesByAgent[agentKind];
 
   useEffect(() => {
-    window.electronAPI.getAgentKind().then(setAgentKindState);
+    void window.electronAPI.getAgentKind().then(setAgentKindState);
   }, []);
 
   useEffect(() => {
     agentKindRef.current = agentKind;
+    stickToBottomRef.current = true;
   }, [agentKind]);
 
-  const updateMessages = (kind: AgentKind, updater: (messages: Message[]) => Message[]) => {
+  const updateMessages = useCallback((kind: AgentKind, updater: (messages: Message[]) => Message[]) => {
     setMessagesByAgent((prev) => ({ ...prev, [kind]: updater(prev[kind]) }));
-  };
+  }, []);
 
-  // Ensure the streaming index is still valid for the given message array.
-  const ensureStreamingMsg = (next: Message[]): number => {
-    if (streamingIndex.current !== null && next[streamingIndex.current]?.streaming) {
-      return streamingIndex.current;
+  const patchTurn = useCallback(
+    (kind: AgentKind, turnId: string | undefined, patch: (msg: Message) => Message) => {
+      if (!turnId) return;
+      updateMessages(kind, (prev) => {
+        const idx = prev.findIndex((message) => message.id === turnId);
+        if (idx === -1) return prev;
+        const next = [...prev];
+        next[idx] = patch(next[idx]);
+        return next;
+      });
+    },
+    [updateMessages],
+  );
+
+  const finishTurn = useCallback((turnId: string | undefined) => {
+    if (!turnId || activeTurnIdRef.current === turnId) {
+      activeTurnIdRef.current = null;
+      setActiveTurnId(null);
+      setBusy(false);
     }
-    // Fallback: look for an existing streaming message.
-    const existing = next.findIndex((m) => m.streaming);
-    if (existing !== -1) {
-      streamingIndex.current = existing;
-      return existing;
+    if (turnId) {
+      delete turnAgentByIdRef.current[turnId];
+      stoppedTurnIdsRef.current.delete(turnId);
     }
-    // Start a new streaming message.
-    streamingIndex.current = next.length;
-    next.push({ role: 'agent', text: '', tools: [], streaming: true });
-    return streamingIndex.current;
+  }, []);
+
+  const scrollToLatest = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    stickToBottomRef.current = true;
+    setShowJumpToLatest(false);
+  }, []);
+
+  const appendDelta = (msg: Message, kind: 'reasoning' | 'text', text: string): Message => {
+    const parts = [...msg.parts];
+    const last = parts[parts.length - 1];
+    if (last && last.kind === kind) {
+      parts[parts.length - 1] = { ...last, text: last.text + text };
+    } else {
+      parts.push({ kind, text });
+    }
+    return { ...msg, parts };
   };
 
   useEffect(() => {
-    const unsubscribe = window.electronAPI.onAgentEvent((event) => {
-      const kind = agentKindRef.current;
+    const unsubscribe = window.electronAPI.onAgentEvent((event: AgentStreamEvent) => {
+      const turnId = event.turnId;
+      const kind: AgentKind = turnId
+        ? turnAgentByIdRef.current[turnId] ?? agentKindRef.current
+        : agentKindRef.current;
+      const wasStopped = Boolean(turnId && stoppedTurnIdsRef.current.has(turnId));
+      const isTerminal = event.type === 'done' || event.type === 'error' || event.type === 'aborted';
+
+      if (wasStopped && !isTerminal) return;
+
+      if (event.type === 'reasoning-delta') {
+        patchTurn(kind, turnId, (msg) => appendDelta(msg, 'reasoning', event.text));
+        return;
+      }
+
       if (event.type === 'text-delta') {
-        updateMessages(kind, (prev) => {
-          const next = [...prev];
-          const idx = ensureStreamingMsg(next);
-          const msg = next[idx];
-          next[idx] = { ...msg, text: (msg.text ?? '') + (event.text ?? '') };
-          return next;
-        });
-      } else if (event.type === 'tool-call') {
-        updateMessages(kind, (prev) => {
-          const next = [...prev];
-          const idx = ensureStreamingMsg(next);
-          const msg = next[idx];
-          next[idx] = {
-            ...msg,
-            tools: [
-              ...msg.tools,
-              { toolCallId: event.toolCallId ?? 'unknown', toolName: event.toolName ?? 'unknown', args: event.args, done: false },
-            ],
-          };
-          return next;
-        });
-      } else if (event.type === 'tool-result') {
-        updateMessages(kind, (prev) => {
-          const next = [...prev];
-          if (streamingIndex.current === null) return prev;
-          const idx = streamingIndex.current;
-          const msg = next[idx];
-          if (!msg || !msg.streaming) return prev;
-          next[idx] = {
-            ...msg,
-            tools: msg.tools.map((t) =>
-              t.toolCallId === event.toolCallId ? { ...t, result: event.result, done: true } : t,
-            ),
-          };
-          return next;
-        });
-        if (event.toolName !== 'get_current_document' && event.toolName !== 'read_pdf_text' && event.toolName !== 'find_pdf_text') {
-          const result = event.result as { output?: string } | undefined;
-          if (result?.output) onFileOutput(result.output);
-        }
-      } else if (event.type === 'error') {
-        updateMessages(kind, (prev) => [...prev, { role: 'error', text: event.message ?? 'Unknown agent error', tools: [] }]);
-        streamingIndex.current = null;
-        setBusy(false);
-      } else if (event.type === 'done') {
-        updateMessages(kind, (prev) => {
-          if (streamingIndex.current === null) return prev;
-          const next = [...prev];
-          const idx = streamingIndex.current;
-          if (next[idx]) {
-            next[idx] = { ...next[idx], streaming: false };
-          }
-          return next;
-        });
-        streamingIndex.current = null;
-        setBusy(false);
+        patchTurn(kind, turnId, (msg) => appendDelta(msg, 'text', event.text));
+        return;
+      }
+
+      if (event.type === 'tool-call') {
+        patchTurn(kind, turnId, (msg) => ({
+          ...msg,
+          parts: [
+            ...msg.parts,
+            {
+              kind: 'tool',
+              toolCallId: event.toolCallId,
+              toolName: event.toolName,
+              args: event.args,
+              done: false,
+            },
+          ],
+        }));
+        return;
+      }
+
+      if (event.type === 'tool-result') {
+        patchTurn(kind, turnId, (msg) => ({
+          ...msg,
+          parts: msg.parts.map((part) =>
+            part.kind === 'tool' && part.toolCallId === event.toolCallId
+              ? { ...part, result: event.result, done: true }
+              : part,
+          ),
+        }));
+
+        const action = derivePdfToolAction(event.toolName, event.result);
+        if (action?.kind === 'preview-highlights') onPreviewHighlights(action.operations);
+        if (action?.kind === 'split-output') onSplitOutput(action.outputDir, action.fileCount);
+        if (action?.kind === 'file-output') onFileOutput(action.path);
+        return;
+      }
+
+      if (event.type === 'file-output') {
+        onFileOutput(event.path);
+        return;
+      }
+
+      if (event.type === 'aborted') {
+        patchTurn(kind, turnId, (msg) => ({ ...msg, streaming: false, stopped: true }));
+        finishTurn(turnId);
+        return;
+      }
+
+      if (event.type === 'error') {
+        patchTurn(kind, turnId, (msg) => ({ ...msg, streaming: false }));
+        updateMessages(kind, (prev) => [
+          ...prev,
+          { id: newId(), role: 'error', text: event.message || 'Unknown agent error', parts: [] },
+        ]);
+        finishTurn(turnId);
+        return;
+      }
+
+      if (event.type === 'done') {
+        patchTurn(kind, turnId, (msg) => ({ ...msg, streaming: false }));
+        finishTurn(turnId);
       }
     });
     return unsubscribe;
-  }, [onFileOutput]);
+  }, [finishTurn, onFileOutput, onPreviewHighlights, onSplitOutput, patchTurn, updateMessages]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (stickToBottomRef.current) {
+      scrollToLatest();
+      return;
+    }
+    setShowJumpToLatest(shouldShowJumpToLatest(el));
+  }, [messages, scrollToLatest]);
+
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const stick = shouldStickToBottom(el);
+    stickToBottomRef.current = stick;
+    setShowJumpToLatest(shouldShowJumpToLatest(el));
+  };
 
   const switchAgent = async (kind: AgentKind) => {
-    if (kind === agentKind || busy) return;
-    streamingIndex.current = null; // reset so we don't index into a different agent's array
+    if (kind === agentKind || busy || !aiEnabled) return;
+    stickToBottomRef.current = true;
     setAgentKindState(kind);
     await window.electronAPI.setAgentKind(kind);
   };
 
-  const sendMessage = () => {
-    if (!input.trim() || busy) return;
-    const userMsg = input.trim();
-    streamingIndex.current = null;
-    updateMessages(agentKind, (prev) => [...prev, { role: 'user', text: userMsg, tools: [] }]);
-    setInput('');
-    setBusy(true);
-    window.electronAPI.sendAgentPrompt(userMsg);
+  const sendPrompt = useCallback(
+    (prompt: string) => {
+      if (!prompt.trim() || busy) return;
+      if (!canChat) {
+        updateMessages(agentKind, (prev) => [
+          ...prev,
+          {
+            id: newId(),
+            role: 'error',
+            text: 'AI is disabled for this PDF. Enable AI before sending document content to an agent.',
+            parts: [],
+          },
+        ]);
+        return;
+      }
+
+      const userMsg = prompt.trim();
+      const replyId = newId();
+      const options = buildAgentPromptOptions(modelSelection, customModelId, modeSelection, reasoningLevel);
+
+      stickToBottomRef.current = true;
+      turnAgentByIdRef.current[replyId] = agentKind;
+      activeTurnIdRef.current = replyId;
+      setActiveTurnId(replyId);
+      updateMessages(agentKind, (prev) => [
+        ...prev,
+        { id: newId(), role: 'user', text: userMsg, parts: [] },
+        { id: replyId, role: 'agent', text: '', parts: [], streaming: true },
+      ]);
+      setInput('');
+      setBusy(true);
+      window.electronAPI.sendAgentPrompt(userMsg, replyId, options);
+    },
+    [
+      agentKind,
+      busy,
+      canChat,
+      customModelId,
+      modeSelection,
+      modelSelection,
+      reasoningLevel,
+      updateMessages,
+    ],
+  );
+
+  const stopCurrentTurn = useCallback(() => {
+    const turnId = activeTurnIdRef.current;
+    if (!turnId) return;
+    const kind = turnAgentByIdRef.current[turnId] ?? agentKindRef.current;
+    stoppedTurnIdsRef.current.add(turnId);
+    window.electronAPI.stopAgentPrompt(turnId);
+    patchTurn(kind, turnId, (msg) => ({ ...msg, streaming: false, stopped: true }));
+    activeTurnIdRef.current = null;
+    setActiveTurnId(null);
+    setBusy(false);
+  }, [patchTurn]);
+
+  useEffect(() => {
+    if (!externalPrompt || !canChat || busy) return;
+    sendPrompt(externalPrompt.text);
+    onExternalPromptConsumed(externalPrompt.id);
+  }, [busy, canChat, externalPrompt, onExternalPromptConsumed, sendPrompt]);
+
+  const runSuggestion = (suggestion: SuggestedAction) => {
+    if (suggestion.id === 'highlight-headings') {
+      onRunSuggestion(suggestion);
+      return;
+    }
+    if (suggestion.intent === 'research' && activeDocumentContext) {
+      sendPrompt(buildResearchPrompt(activeDocumentContext, suggestion.prompt));
+      return;
+    }
+    sendPrompt(suggestion.prompt);
   };
 
-  const messages = messagesByAgent[agentKind];
+  const summarizeWorkspace = () => {
+    try {
+      sendPrompt(buildWorkspaceSummaryPrompt(workspaceDocuments));
+    } catch (error) {
+      updateMessages(agentKind, (prev) => [
+        ...prev,
+        { id: newId(), role: 'error', text: error instanceof Error ? error.message : String(error), parts: [] },
+      ]);
+    }
+  };
+
+  const composerPlaceholder = canChat
+    ? busy
+      ? 'Agent is responding. Stop it before sending another request.'
+      : 'Ask about the current PDF...'
+    : 'Enable AI for this PDF to chat';
 
   return (
-    <div
-      style={{
-        width: 380,
-        borderLeft: '1px solid #ddd',
-        background: '#fff',
-        display: 'flex',
-        flexDirection: 'column',
-      }}
-    >
-      <div style={{ padding: 12, borderBottom: '1px solid #ddd', display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ fontWeight: 600, marginRight: 4 }}>Agent</span>
-        {AGENT_KINDS.map((kind) => (
-          <button
-            key={kind}
-            onClick={() => switchAgent(kind)}
-            disabled={busy}
-            title={AGENT_INFO[kind].label}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 4,
-              padding: '3px 8px 3px 4px',
-              borderRadius: 999,
-              border: kind === agentKind ? `1.5px solid ${AGENT_INFO[kind].color}` : '1.5px solid transparent',
-              background: kind === agentKind ? `${AGENT_INFO[kind].color}1a` : 'transparent',
-              cursor: busy ? 'default' : 'pointer',
-            }}
-          >
-            <AgentLogo kind={kind} size={16} />
-            <span style={{ fontSize: 12, color: kind === agentKind ? '#111' : '#888' }}>{AGENT_INFO[kind].label}</span>
-          </button>
-        ))}
-      </div>
-      <div style={{ flex: 1, overflowY: 'auto', padding: 12 }}>
-        {messages.map((m, i) => (
-          <div key={i} style={{ marginBottom: 12 }}>
-            <div
-              style={{
-                padding: 10,
-                borderRadius: 8,
-                background: m.role === 'user' ? '#e6f4ff' : m.role === 'error' ? '#fdecea' : '#f5f5f5',
-                color: m.role === 'error' ? '#b71c1c' : '#111',
-                whiteSpace: 'pre-wrap',
-              }}
-            >
-              {m.text}
-              {m.streaming && !m.text && <em style={{ color: '#999' }}>thinking…</em>}
-            </div>
-            {m.tools.length > 0 && (
-              <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                {m.tools.map((t) => (
-                  <div
-                    key={t.toolCallId}
-                    style={{
-                      fontSize: 12,
-                      color: '#555',
-                      background: '#eef',
-                      borderRadius: 6,
-                      padding: '4px 8px',
-                    }}
-                  >
-                    {t.done ? '✓' : '⏳'} <strong>{t.toolName}</strong>
-                    {t.args ? ` ${safeStringify(t.args)}` : ''}
-                  </div>
-                ))}
-              </div>
-            )}
+    <aside className="sparrow-agent-panel">
+      <header className="agent-header">
+        <div className="assistant-id">
+          <SparrowMark size={30} />
+          <div>
+            <div className="assistant-name">小雀</div>
+            <div className="assistant-subtitle">{activeDocumentTitle ?? 'No PDF selected'}</div>
           </div>
-        ))}
+        </div>
+        <label className="agent-select">
+          <AgentLogo kind={agentKind} size={16} />
+          <select value={agentKind} disabled={busy || !aiEnabled} onChange={(event) => switchAgent(event.target.value as AgentKind)}>
+            {AGENT_KINDS.map((kind) => (
+              <option key={kind} value={kind}>
+                {AGENT_INFO[kind].label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </header>
+
+      <section className="agent-controls" aria-label="Agent controls">
+        <label>
+          <span>Model</span>
+          <select
+            value={modelSelection}
+            disabled={busy || !aiEnabled}
+            onChange={(event) => setModelSelection(event.target.value as AgentModelSelection)}
+          >
+            <option value="default">Agent default</option>
+            <option value="custom">Custom model</option>
+          </select>
+        </label>
+        <label>
+          <span>Mode</span>
+          <select
+            value={modeSelection}
+            disabled={busy || !aiEnabled}
+            onChange={(event) => setModeSelection(event.target.value as AgentModeSelection)}
+          >
+            {MODE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Think</span>
+          <select
+            value={reasoningLevel}
+            disabled={busy || !aiEnabled}
+            onChange={(event) => setReasoningLevel(event.target.value as AgentReasoningLevel)}
+          >
+            {REASONING_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {modelSelection === 'custom' && (
+          <input
+            className="custom-model-input"
+            value={customModelId}
+            onChange={(event) => setCustomModelId(event.target.value)}
+            placeholder="model id"
+            disabled={busy || !aiEnabled}
+          />
+        )}
+      </section>
+
+      <section className={`assistant-card privacy-card ${aiEnabled ? 'enabled' : ''}`}>
+        <div className="card-title">AI Permission</div>
+        <div className="privacy-card-row">
+          <Shield size={16} />
+          <span>{aiEnabled ? `Enabled · ${privacyMode}` : `Off · ${privacyMode}`}</span>
+        </div>
+        {!aiEnabled && (
+          <button className="workspace-action" onClick={onEnableAi} disabled={!activeDocumentTitle}>
+            Enable AI for this PDF
+          </button>
+        )}
+      </section>
+
+      <section className="assistant-card">
+        <div className="card-title">Document Sense</div>
+        {analysis ? (
+          <>
+            <div className="analysis-kind">{analysis.label}</div>
+            <div className="analysis-summary">{analysis.summary}</div>
+            <div className="suggestion-grid">
+              {analysis.suggestions.slice(0, 6).map((suggestion) => (
+                <button key={suggestion.id} onClick={() => runSuggestion(suggestion)} disabled={busy}>
+                  {suggestion.label}
+                </button>
+              ))}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="analysis-summary">
+              {analysisStatus === 'analyzing'
+                ? '正在本地抽取文本并分析文档类型。'
+                : '未分析。点击 Analyze 后才会读取 PDF 文本。'}
+            </div>
+            <button className="workspace-action" onClick={onAnalyzeDocument} disabled={!activeDocumentTitle || busy}>
+              <Sparkles size={14} />
+              Analyze
+            </button>
+          </>
+        )}
+      </section>
+
+      {workspaceDocuments.length > 1 && (
+        <section className="assistant-card workspace-card">
+          <div className="card-title">Workspace</div>
+          <div className="analysis-kind">{workspaceDocuments.length} PDFs</div>
+          <div className="analysis-summary">小雀可以在你开启 AI 后读取当前工作集，做联动总结、比较和后续建议。</div>
+          <button className="workspace-action" onClick={summarizeWorkspace} disabled={busy || !aiEnabled}>
+            Summarize workspace
+          </button>
+        </section>
+      )}
+
+      <div className="chat-stream-wrap">
+        <div ref={scrollRef} onScroll={handleScroll} className="chat-scroll">
+          {messages.map((message) => (
+            <ChatMessage
+              key={message.id}
+              message={message}
+              openParts={openParts}
+              onTogglePart={(partKey) => setOpenParts((prev) => ({ ...prev, [partKey]: !prev[partKey] }))}
+            />
+          ))}
+        </div>
+        {showJumpToLatest && (
+          <button className="jump-latest" onClick={scrollToLatest}>
+            <ArrowDown size={14} />
+            Latest
+          </button>
+        )}
       </div>
-      <div style={{ padding: 12, borderTop: '1px solid #ddd', display: 'flex', gap: 8 }}>
-        <input
+
+      <footer className="chat-composer">
+        <textarea
           value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
-          placeholder={busy ? 'Waiting for agent…' : `Ask ${AGENT_INFO[agentKind].label}...`}
-          disabled={busy}
-          style={{ flex: 1, padding: 8, borderRadius: 4, border: '1px solid #ccc' }}
+          onChange={(event) => setInput(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              sendPrompt(input);
+            }
+          }}
+          placeholder={composerPlaceholder}
+          disabled={!canChat || busy}
+          rows={3}
         />
-        <button onClick={sendMessage} disabled={busy}>
-          Send
-        </button>
-      </div>
+        <div className="composer-actions">
+          {busy ? (
+            <button className="stop-button" onClick={stopCurrentTurn} disabled={!activeTurnId}>
+              <Square size={14} />
+              Stop
+            </button>
+          ) : (
+            <button onClick={() => sendPrompt(input)} disabled={!canChat || !input.trim()}>
+              <Send size={15} />
+              Send
+            </button>
+          )}
+        </div>
+      </footer>
+    </aside>
+  );
+}
+
+function ChatMessage({
+  message,
+  openParts,
+  onTogglePart,
+}: {
+  message: Message;
+  openParts: Record<string, boolean>;
+  onTogglePart: (partKey: string) => void;
+}) {
+  if (message.role === 'user') return <div className="chat-message user">{message.text}</div>;
+  if (message.role === 'error') return <div className="chat-message error">{message.text}</div>;
+
+  const hasParts = message.parts.length > 0;
+
+  return (
+    <div className="chat-message agent">
+      {!hasParts && message.streaming && (
+        <div className="chat-thinking">
+          <span className="chat-spinner" />
+          <span className="chat-thinking-label">Thinking</span>
+        </div>
+      )}
+
+      {message.parts.map((part, index) => {
+        const partKey = `${message.id}-${index}`;
+        const isLast = index === message.parts.length - 1;
+        if (part.kind === 'reasoning') {
+          const isLive = Boolean(message.streaming && isLast);
+          const open = Boolean(openParts[partKey]);
+          return (
+            <div className="chat-reasoning" key={partKey}>
+              <button className="chat-reasoning-header" onClick={() => onTogglePart(partKey)}>
+                {isLive && <span className="chat-spinner" />}
+                <span className={isLive ? 'chat-thinking-label' : ''}>{isLive ? 'Thinking' : 'Reasoning'}</span>
+                <ChevronRight className={`chat-tool-caret ${open ? 'open' : ''}`} size={14} />
+              </button>
+              {open && <pre>{part.text}</pre>}
+            </div>
+          );
+        }
+
+        if (part.kind === 'tool') {
+          return (
+            <ToolPart
+              key={partKey}
+              partKey={partKey}
+              tool={part}
+              open={Boolean(openParts[partKey])}
+              onToggle={onTogglePart}
+            />
+          );
+        }
+
+        return (
+          <div className="md-content" key={partKey}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{part.text}</ReactMarkdown>
+          </div>
+        );
+      })}
+
+      {message.stopped && <div className="chat-stopped">Stopped</div>}
     </div>
   );
+}
+
+function ToolPart({
+  partKey,
+  tool,
+  open,
+  onToggle,
+}: {
+  partKey: string;
+  tool: Extract<Part, { kind: 'tool' }>;
+  open: boolean;
+  onToggle: (partKey: string) => void;
+}) {
+  return (
+    <div className="chat-tool-card">
+      <button className="chat-tool-header" onClick={() => onToggle(partKey)}>
+        {!tool.done && <span className="chat-spinner" />}
+        <span>{tool.done ? 'Called' : 'Calling'}</span>
+        <span className="chat-tool-name">{tool.toolName}</span>
+        <ChevronRight className={`chat-tool-caret ${open ? 'open' : ''}`} size={14} />
+      </button>
+
+      {open && (
+        <div className="chat-tool-body">
+          {tool.args !== undefined && (
+            <>
+              <div>Input</div>
+              <pre>{safeStringify(tool.args)}</pre>
+            </>
+          )}
+          {tool.result !== undefined && (
+            <>
+              <div className="tool-result-title">Result</div>
+              <pre>{safeStringify(tool.result)}</pre>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }

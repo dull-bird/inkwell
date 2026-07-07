@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 
 // Disable GPU before the app is ready to avoid GPU process crashes on Linux
 // with certain drivers/remote-desktop setups.
@@ -8,11 +8,11 @@ app.commandLine.appendSwitch('disable-software-rasterizer');
 
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, statSync } from 'node:fs';
 import { spawn, ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
-import { AgentSession, type AgentEvent, type AgentKind } from './agent.js';
+import { AgentSession, type AgentEvent, type AgentKind, type AgentPromptOptions } from './agent.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -149,6 +149,23 @@ function getOrCreateAgentSession(kind: AgentKind): AgentSession {
   return session;
 }
 
+function collectPdfFiles(root: string): string[] {
+  const found: string[] = [];
+  const visit = (dir: string) => {
+    for (const entry of readdirSync(dir)) {
+      const path = join(dir, entry);
+      const stat = statSync(path);
+      if (stat.isDirectory()) {
+        visit(path);
+      } else if (stat.isFile() && /\.pdf$/i.test(path)) {
+        found.push(path);
+      }
+    }
+  };
+  visit(root);
+  return Array.from(new Set(found)).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
 // IPC handlers
 ipcMain.handle('dialog:openFile', async () => {
   const result = await dialog.showOpenDialog(mainWindow!, {
@@ -163,6 +180,15 @@ ipcMain.handle('dialog:openFile', async () => {
   return path;
 });
 
+ipcMain.handle('dialog:openFolder', async () => {
+  const result = await dialog.showOpenDialog(mainWindow!, {
+    properties: ['openDirectory'],
+  });
+  const folder = result.filePaths[0];
+  if (!folder) return [];
+  return collectPdfFiles(folder);
+});
+
 ipcMain.handle('app:getBackendUrl', () => `http://127.0.0.1:${backendPort}`);
 ipcMain.handle('app:getBackendToken', () => backendToken);
 
@@ -171,20 +197,31 @@ ipcMain.handle('app:setCurrentFile', (_event, path: string) => {
   for (const session of agentSessions.values()) session.setCurrentPdf(path);
 });
 
+ipcMain.handle('app:openPath', async (_event, path: string) => {
+  if (!existsSync(path)) throw new Error(`Path does not exist: ${path}`);
+  const error = await shell.openPath(path);
+  if (error) throw new Error(error);
+  return path;
+});
+
 ipcMain.handle('agent:getKind', () => currentAgentKind);
 ipcMain.handle('agent:setKind', (_event, kind: AgentKind) => {
   currentAgentKind = kind;
 });
 
-ipcMain.on('agent:prompt', async (event, prompt: string) => {
+ipcMain.on('agent:prompt', async (event, prompt: string, turnId: string, options?: AgentPromptOptions) => {
   lastAgentSender = event.sender;
   const send = (agentEvent: AgentEvent) => {
-    if (!event.sender.isDestroyed()) event.sender.send('agent:event', agentEvent);
+    if (!event.sender.isDestroyed()) event.sender.send('agent:event', { ...agentEvent, turnId });
   };
   try {
     const session = getOrCreateAgentSession(currentAgentKind);
-    await session.sendMessage(prompt, send);
+    await session.sendMessage(prompt, send, options);
   } catch (err) {
     send({ type: 'error', message: err instanceof Error ? err.message : String(err) });
   }
+});
+
+ipcMain.on('agent:stop', (_event, _turnId: string) => {
+  agentSessions.get(currentAgentKind)?.stopCurrentTurn();
 });

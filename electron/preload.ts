@@ -1,29 +1,35 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AgentEvent, AgentKind } from './agent.js';
+import type { AgentEvent, AgentKind, AgentPromptOptions } from './agent.js';
 
-export type { AgentEvent, AgentKind };
+export type { AgentEvent, AgentKind, AgentPromptOptions };
 
 export interface ElectronAPI {
   openPdfFile: () => Promise<string | null>;
+  openPdfFolder: () => Promise<string[]>;
   getBackendUrl: () => Promise<string>;
   getBackendToken: () => Promise<string>;
   setCurrentFile: (path: string) => Promise<void>;
+  openPath: (path: string) => Promise<string>;
   getAgentKind: () => Promise<AgentKind>;
   setAgentKind: (kind: AgentKind) => Promise<void>;
-  sendAgentPrompt: (prompt: string) => void;
-  onAgentEvent: (callback: (event: AgentEvent) => void) => () => void;
+  sendAgentPrompt: (prompt: string, turnId: string, options?: AgentPromptOptions) => void;
+  stopAgentPrompt: (turnId: string) => void;
+  onAgentEvent: (callback: (event: AgentEvent & { turnId?: string }) => void) => () => void;
 }
 
 const api: ElectronAPI = {
   openPdfFile: () => ipcRenderer.invoke('dialog:openFile'),
+  openPdfFolder: () => ipcRenderer.invoke('dialog:openFolder'),
   getBackendUrl: () => ipcRenderer.invoke('app:getBackendUrl'),
   getBackendToken: () => ipcRenderer.invoke('app:getBackendToken'),
   setCurrentFile: (path) => ipcRenderer.invoke('app:setCurrentFile', path),
+  openPath: (path) => ipcRenderer.invoke('app:openPath', path),
   getAgentKind: () => ipcRenderer.invoke('agent:getKind'),
   setAgentKind: (kind) => ipcRenderer.invoke('agent:setKind', kind),
-  sendAgentPrompt: (prompt) => ipcRenderer.send('agent:prompt', prompt),
+  sendAgentPrompt: (prompt, turnId, options) => ipcRenderer.send('agent:prompt', prompt, turnId, options),
+  stopAgentPrompt: (turnId) => ipcRenderer.send('agent:stop', turnId),
   onAgentEvent: (callback) => {
-    const listener = (_event: Electron.IpcRendererEvent, agentEvent: AgentEvent) => callback(agentEvent);
+    const listener = (_event: Electron.IpcRendererEvent, agentEvent: AgentEvent & { turnId?: string }) => callback(agentEvent);
     ipcRenderer.on('agent:event', listener);
     return () => ipcRenderer.removeListener('agent:event', listener);
   },

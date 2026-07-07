@@ -1,8 +1,11 @@
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { app } from 'electron';
 import { createACPProvider, acpTools } from '@mcpc-tech/acp-ai-provider';
 import { streamText, tool } from 'ai';
 import { z } from 'zod';
+import { extractInkwellToolEvent } from './agentToolEvents.js';
 
 // Mirrored (not imported) in shared/agent-types.ts so the renderer's
 // TypeScript program never needs to resolve this file's runtime-heavy
@@ -10,20 +13,28 @@ import { z } from 'zod';
 // of these events.
 export type AgentEvent =
   | { type: 'text-delta'; text: string }
+  | { type: 'reasoning-delta'; text: string }
   | { type: 'tool-call'; toolCallId: string; toolName: string; args: unknown }
   | { type: 'tool-result'; toolCallId: string; toolName: string; result: unknown }
   | { type: 'file-output'; path: string }
+  | { type: 'aborted' }
   | { type: 'done' }
   | { type: 'error'; message: string };
 
 export type AgentKind = 'claude' | 'codex' | 'kimi';
+export type AgentReasoningLevel = 'auto' | 'low' | 'medium' | 'high';
+
+export interface AgentPromptOptions {
+  modelId?: string;
+  modeId?: string;
+  reasoningLevel?: AgentReasoningLevel;
+}
 
 // Every ACP-compatible CLI reports the real tool name/args nested inside its
 // own generic dynamic-tool wrapper. Only calls to our own MCP-style tool
 // names (prefixed by acpTools()) are worth surfacing to the chat UI — this
 // filters out each agent's internal bookkeeping calls (e.g. Claude's
 // "ToolSearch" lookups).
-const OUR_TOOL_MARKER = 'acp-ai-sdk-tools__';
 
 // Tools that could read/write/execute arbitrary things on the user's
 // machine. Inkwell only wants the agent to operate the PDF through our own
@@ -116,9 +127,23 @@ function unwrapToolOutput(output: unknown): unknown {
   }
 }
 
+function reasoningInstruction(level: AgentReasoningLevel | undefined): string {
+  switch (level) {
+    case 'low':
+      return '[Inkwell: Reasoning intensity requested: low. Prefer fast, direct answers.]';
+    case 'medium':
+      return '[Inkwell: Reasoning intensity requested: medium. Balance speed with careful checking.]';
+    case 'high':
+      return '[Inkwell: Reasoning intensity requested: high. Use deep reasoning for document understanding and edits.]';
+    default:
+      return '';
+  }
+}
+
 export class AgentSession {
   private provider: ReturnType<typeof createACPProvider>;
   private currentPdfPath: string | null = null;
+  private activeAbortController: AbortController | null = null;
 
   constructor(
     readonly kind: AgentKind,
@@ -147,7 +172,12 @@ export class AgentSession {
   }
 
   cleanup(): void {
+    this.stopCurrentTurn();
     this.provider.cleanup();
+  }
+
+  stopCurrentTurn(): void {
+    this.activeAbortController?.abort();
   }
 
   private async backendCall(path: string, options: BackendCallOptions = {}): Promise<unknown> {
@@ -202,6 +232,22 @@ export class AgentSession {
         execute: async ({ path, query, color }) =>
           textResult(await this.backendCall('/highlight', { body: { path: this.resolvePath(path), query, color } })),
       }),
+      highlight_pdf_headings: tool({
+        description:
+          'Detect heading-like text blocks and return highlight operations. This does NOT modify the file — ' +
+          'the Inkwell viewer can preview these operations immediately, and apply_pdf_highlights writes a new PDF copy.',
+        inputSchema: z.object({
+          path: z.string().optional().describe('Absolute path to the PDF. Defaults to the currently open document.'),
+          color: z.array(z.number()).length(3).optional().describe('RGB 0-1 highlight color. Defaults to yellow.'),
+          opacity: z.number().min(0).max(1).optional().describe('Highlight opacity. Defaults to 0.25.'),
+        }),
+        execute: async ({ path, color, opacity }) =>
+          textResult(
+            await this.backendCall('/highlight-headings', {
+              body: { path: this.resolvePath(path), color, opacity },
+            }),
+          ),
+      }),
       apply_pdf_highlights: tool({
         description:
           'Write highlight operations (as returned by find_pdf_text) to a new copy of the PDF, saved as ' +
@@ -214,6 +260,8 @@ export class AgentSession {
                 page: z.number().int(),
                 rects: z.array(z.object({ x0: z.number(), y0: z.number(), x1: z.number(), y1: z.number() })),
                 color: z.array(z.number()).length(3),
+                opacity: z.number().min(0).max(1).optional(),
+                text: z.string().optional(),
               }),
             )
             .describe('Operations returned by find_pdf_text.'),
@@ -236,13 +284,19 @@ export class AgentSession {
         },
       }),
       split_pdf: tool({
-        description: 'Split a PDF into one file per page, written to a directory.',
+        description:
+          'Split a PDF into files. Omit page_ranges to split into one file per page. ' +
+          'Use page_ranges for user-facing 1-based inclusive ranges, e.g. [[2, 5]] creates one PDF with pages 2-5.',
         inputSchema: z.object({
           path: z.string().optional().describe('Absolute path to the PDF. Defaults to the currently open document.'),
           output_dir: z.string().optional().describe('Directory to write pages to. Defaults to a temp directory.'),
+          page_ranges: z
+            .array(z.tuple([z.number().int().min(1), z.number().int().min(1)]))
+            .optional()
+            .describe('1-based inclusive page ranges requested by user, e.g. [[1, 3], [7, 7]].'),
         }),
-        execute: async ({ path, output_dir }) =>
-          textResult(await this.backendCall('/split', { body: { path: this.resolvePath(path), output_dir } })),
+        execute: async ({ path, output_dir, page_ranges }) =>
+          textResult(await this.backendCall('/split', { body: { path: this.resolvePath(path), output_dir, page_ranges } })),
       }),
       watermark_pdf: tool({
         description: 'Stamp a diagonal text watermark on every page, saved as "<name>_watermarked.pdf".',
@@ -253,6 +307,26 @@ export class AgentSession {
         execute: async ({ path, text }) => {
           const result = (await this.backendCall('/watermark', {
             body: { path: this.resolvePath(path), text },
+          })) as { output: string };
+          notifyOutput(result.output);
+          return textResult(result);
+        },
+      }),
+      add_pdf_comment: tool({
+        description:
+          'Add a standard PDF sticky-note comment annotation and save a new "<name>_commented.pdf" copy. ' +
+          'Use page/x/y coordinates in PDF points, with page 0-indexed.',
+        inputSchema: z.object({
+          path: z.string().optional().describe('Absolute path PDF. Defaults currently open document.'),
+          page: z.number().int().describe('0-indexed page number.'),
+          x: z.number().describe('X coordinate in PDF points from left edge.'),
+          y: z.number().describe('Y coordinate in PDF points from top edge.'),
+          text: z.string().describe('Comment text.'),
+          author: z.string().optional().describe('Comment author. Defaults Inkwell.'),
+        }),
+        execute: async ({ path, page, x, y, text, author }) => {
+          const result = (await this.backendCall('/comment', {
+            body: { path: this.resolvePath(path), page, x, y, text, author },
           })) as { output: string };
           notifyOutput(result.output);
           return textResult(result);
@@ -332,48 +406,97 @@ export class AgentSession {
           return textResult(result);
         },
       }),
+      export_markdown_note: tool({
+        description:
+          'Save Markdown text as a .md file in the "Inkwell Notes" folder inside the user\'s Documents ' +
+          'directory. Use this whenever the user asks to export, save, or download a note or summary as Markdown.',
+        inputSchema: z.object({
+          filename: z.string().describe('File name without a path or extension, e.g. "meeting-summary".'),
+          content: z.string().describe('The full Markdown content to write.'),
+        }),
+        execute: async ({ filename, content }) => {
+          const notesDir = join(app.getPath('documents'), 'Inkwell Notes');
+          await mkdir(notesDir, { recursive: true });
+          // Strip any path separators so this can only ever land inside notesDir.
+          const safeName = filename.replace(/[/\\]/g, '_').replace(/\.md$/i, '') || 'note';
+          const outPath = join(notesDir, `${safeName}.md`);
+          await writeFile(outPath, content, 'utf-8');
+          return textResult({ output: outPath });
+        },
+      }),
     });
   }
 
-  async sendMessage(prompt: string, onEvent: (event: AgentEvent) => void): Promise<void> {
+  async sendMessage(
+    prompt: string,
+    onEvent: (event: AgentEvent) => void,
+    options: AgentPromptOptions = {},
+  ): Promise<void> {
+    this.stopCurrentTurn();
+    const abortController = new AbortController();
+    this.activeAbortController = abortController;
+
     try {
+      // ACP agents (Claude Code's CLI in particular) run as one persistent
+      // session per AgentSession instance — `system` is only honored while
+      // that session is first established, so it goes stale the moment the
+      // user opens/switches a PDF mid-conversation. The prompt text, unlike
+      // `system`, really is resent fresh on every turn, so the current PDF
+      // path is folded into it here instead of relying on `system` alone.
+      const pdfContext = this.currentPdfPath
+        ? `[Inkwell: the PDF currently open in the viewer is "${this.currentPdfPath}". Use it directly for ` +
+          'anything the user refers to as "this PDF"/"the document"/"it" — do not ask for a path. ' +
+          'For highlighting or annotations, return preview operations first so Inkwell displays them immediately. ' +
+          'Only call apply_pdf_highlights when the user explicitly asks to save/apply/export/write a PDF copy.]'
+        : '[Inkwell: no PDF is currently open in the viewer.]';
       const { fullStream } = streamText({
-        model: this.provider.languageModel(),
-        prompt,
+        model: this.provider.languageModel(options.modelId, options.modeId),
+        system: this.currentPdfPath
+          ? `The user currently has a PDF open in Inkwell at: ${this.currentPdfPath}. When they refer to ` +
+            '"this PDF", "the document", "it", etc. without giving a path, operate on that file directly — ' +
+            'do not ask them for a path or a URL first. For visual edits such as highlighting or annotations, ' +
+            'return preview operations first so Inkwell can show them immediately. Do not call apply_pdf_highlights ' +
+            'unless the user explicitly asks to save, apply, write, export, or create a new PDF copy.'
+          : 'No PDF is currently open in Inkwell. If the user refers to "the PDF" without specifying one, ' +
+            'tell them to open a file first.',
+        prompt: [pdfContext, reasoningInstruction(options.reasoningLevel), prompt].filter(Boolean).join('\n\n'),
         tools: this.buildTools(onEvent),
+        abortSignal: abortController.signal,
       });
 
       for await (const part of fullStream) {
+        if (abortController.signal.aborted) break;
         if (part.type === 'text-delta') {
           onEvent({ type: 'text-delta', text: part.text });
-        } else if (part.type === 'tool-call' || part.type === 'tool-result') {
-          const inner = (part as { input?: { toolName?: string; args?: unknown } }).input;
-          const realName = inner?.toolName;
-          // Different ACP agents prefix our MCP tool names slightly
-          // differently (e.g. Claude's "mcp__acp-ai-sdk-tools__x"); matching
-          // on the marker substring rather than an exact prefix keeps this
-          // working regardless of exactly how each agent namespaces it.
-          const markerIndex = realName?.indexOf(OUR_TOOL_MARKER) ?? -1;
-          if (markerIndex === -1) continue;
-          const shortName = realName!.slice(markerIndex + OUR_TOOL_MARKER.length);
-          if (part.type === 'tool-call') {
-            onEvent({ type: 'tool-call', toolCallId: part.toolCallId, toolName: shortName, args: inner?.args });
-          } else {
-            const output = (part as unknown as { output?: unknown }).output;
-            onEvent({
-              type: 'tool-result',
-              toolCallId: part.toolCallId,
-              toolName: shortName,
-              result: unwrapToolOutput(output),
-            });
-          }
+        } else if (part.type === 'reasoning-delta') {
+          onEvent({ type: 'reasoning-delta', text: part.text });
+      } else if (part.type === 'tool-call' || part.type === 'tool-result') {
+        const toolEvent = extractInkwellToolEvent(part);
+        if (!toolEvent) continue;
+        if (part.type === 'tool-call') {
+          onEvent({
+            type: 'tool-call',
+            toolCallId: toolEvent.toolCallId,
+            toolName: toolEvent.toolName,
+            args: toolEvent.args,
+          });
+        } else {
+          onEvent({
+            type: 'tool-result',
+            toolCallId: toolEvent.toolCallId,
+            toolName: toolEvent.toolName,
+            result: unwrapToolOutput(toolEvent.output),
+          });
+        }
         } else if (part.type === 'error') {
           onEvent({ type: 'error', message: String((part as { error: unknown }).error) });
         }
       }
-      onEvent({ type: 'done' });
+      onEvent(abortController.signal.aborted ? { type: 'aborted' } : { type: 'done' });
     } catch (err) {
-      onEvent({ type: 'error', message: err instanceof Error ? err.message : String(err) });
+      onEvent(abortController.signal.aborted ? { type: 'aborted' } : { type: 'error', message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      if (this.activeAbortController === abortController) this.activeAbortController = null;
     }
   }
 }
