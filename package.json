@@ -13,8 +13,47 @@
     "build:electron": "tsc -p electron/tsconfig.json",
     "preview": "vite preview",
     "electron:preview": "npm run build && electron .",
+    "package:mac": "npm run build && electron-builder --mac",
+    "package:win": "npm run build && electron-builder --win",
+    "package:linux": "npm run build && electron-builder --linux",
+    "package:all": "npm run build && electron-builder -mwl",
     "backend:install": "cd backend && /usr/bin/python3 -m pip install -e .",
     "backend:dev": "cd backend && /usr/bin/python3 -m inkwell.server"
+  },
+  "build": {
+    "appId": "app.sparrowpdf.inkwell",
+    "productName": "Sparrow",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "description": "Sparrow is a lightweight cross-platform AI PDF editor for reading, annotation, forms, signatures, and agent-assisted document work."
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "category": "Office",
+      "target": [
+        "AppImage",
+        "deb"
+      ]
+    }
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "^0.55.0",
@@ -34,7 +73,8 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",
-    "electron": "^33.2.0",
+    "electron": "^43.1.0",
+    "electron-builder": "^26.15.3",
     "typescript": "^5.6.3",
     "vite": "^5.4.11",
     "vite-plugin-electron": "^0.29.0",

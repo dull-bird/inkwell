@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Bot,
   ChevronRight,
@@ -33,6 +33,7 @@ import { analyzeDocumentText, type DocumentAnalysis } from './documentAnalysis';
 import { buildEncryptRequest, buildWatermarkRequest, describeFileOutput } from './pdfFileActions';
 import { parsePageRanges } from './pdfRanges';
 import { buildRemainingPageOrder, buildRotationMap } from './pageOperations';
+import { nativePdfCoreStatusSummary, type NativePdfCoreStatus } from '../shared/native-pdf-core';
 import {
   DEFAULT_AI_PERMISSION_MODE,
   getDefaultDocumentAiEnabled,
@@ -108,6 +109,7 @@ export default function App() {
   const [workspacePaths, setWorkspacePaths] = useState<string[]>([]);
   const [activeDocumentId, setActiveDocumentId] = useState<string | null>(null);
   const [backend, setBackend] = useState<BackendState | null>(null);
+  const [nativeCoreStatus, setNativeCoreStatus] = useState<NativePdfCoreStatus | null>(null);
   const [highlightsByDocument, setHighlightsByDocument] = useState<Record<string, HighlightOperation[]>>({});
   const [commentTargetsByDocument, setCommentTargetsByDocument] = useState<Record<string, CommentTarget>>({});
   const [undoStack, setUndoStack] = useState<Array<{ documentId: string; operations: HighlightOperation[] }>>([]);
@@ -165,6 +167,15 @@ export default function App() {
     () => normalizeWorkspacePaths([...workspacePaths, ...documents.map((document) => document.path)]),
     [documents, workspacePaths],
   );
+
+  useEffect(() => {
+    void window.electronAPI
+      .getNativePdfCoreStatus()
+      .then(setNativeCoreStatus)
+      .catch((error) => {
+        setStatus(error instanceof Error ? error.message : String(error));
+      });
+  }, []);
 
   const pdfUrl = useMemo(() => {
     if (!backend || !activeDocument) return null;
@@ -726,6 +737,7 @@ export default function App() {
                   encryptPassword={encryptPassword}
                   aiBrushInstruction={aiBrushInstruction}
                   sessionNotes={sessionNotes}
+                  nativeCoreStatus={nativeCoreStatus}
                   aiAllowed={aiAllowed}
                   onAnalyze={analyzeActiveDocument}
                   onHighlightHeadings={highlightHeadings}
@@ -1059,6 +1071,7 @@ interface ToolsPaneProps {
   encryptPassword: string;
   aiBrushInstruction: string;
   sessionNotes: string;
+  nativeCoreStatus: NativePdfCoreStatus | null;
   aiAllowed: boolean;
   onAnalyze: () => void;
   onHighlightHeadings: () => void;
@@ -1242,7 +1255,12 @@ function ToolsPane(props: ToolsPaneProps) {
 
       <section className="native-core-note">
         <div className="section-title">Native Core</div>
-        <p>Current build uses PyMuPDF. PDF4QT integration is planned behind the same PDF operation bridge.</p>
+        <p>{props.nativeCoreStatus ? nativePdfCoreStatusSummary(props.nativeCoreStatus) : 'Checking PDF core...'}</p>
+        {props.nativeCoreStatus?.mode !== 'pdf4qt-ready' && (
+          <p className="native-core-secondary">
+            Current runtime stays on pdf.js/PyMuPDF until the PDF4QT host bridge is available.
+          </p>
+        )}
       </section>
     </div>
   );

@@ -1,3 +1,5 @@
+import type { NativePdfCoreStatus } from './native-pdf-core';
+
 // Types shared between Electron main process (electron/agent.ts,
 // electron/preload.ts) and renderer (src/). Kept dependency-free so
 // renderer's TypeScript program never needs resolve main-process-only
@@ -56,6 +58,7 @@ export interface ElectronAPI {
   getBackendToken: () => Promise<string>;
   setCurrentFile: (path: string) => Promise<void>;
   openPath: (path: string) => Promise<string>;
+  getNativePdfCoreStatus: () => Promise<NativePdfCoreStatus>;
   exportNativeAgentSession: (
     request: NativeAgentSessionExportRequest,
   ) => Promise<NativeAgentSessionExportResult>;

@@ -16,6 +16,13 @@ export function createBrowserPreviewElectronApi(): ElectronAPI {
     getBackendToken: async () => '',
     setCurrentFile: async () => {},
     openPath: async (path) => path,
+    getNativePdfCoreStatus: async () => ({
+      mode: 'pdfjs-fallback',
+      renderer: 'pdf.js',
+      writeEngine: 'PyMuPDF',
+      pdf4qt: { available: false, envVar: 'INKWELL_PDF4QT_HOST' },
+      message: 'PDF4QT host not configured. Set INKWELL_PDF4QT_HOST to test the native core bridge.',
+    }),
     exportNativeAgentSession: async () => ({
       directory: '/tmp/sparrow-agent-export',
       handoffPath: '/tmp/sparrow-agent-export/handoff.md',

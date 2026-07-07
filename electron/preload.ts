@@ -4,6 +4,19 @@ import type { AgentEvent, AgentKind, AgentPromptOptions } from './agent.js';
 export type { AgentEvent, AgentKind, AgentPromptOptions };
 
 type PdfSessionExportMode = 'none' | 'reference' | 'copy';
+type NativePdfCoreMode = 'pdfjs-fallback' | 'pdf4qt-missing' | 'pdf4qt-ready';
+
+interface NativePdfCoreStatus {
+  mode: NativePdfCoreMode;
+  renderer: 'pdf.js' | 'PDF4QT';
+  writeEngine: 'PyMuPDF' | 'PDF4QT command bridge';
+  pdf4qt: {
+    available: boolean;
+    envVar: 'INKWELL_PDF4QT_HOST';
+    hostPath?: string;
+  };
+  message: string;
+}
 
 interface NativeAgentSessionExportRequest {
   suggestedName: string;
@@ -30,6 +43,7 @@ export interface ElectronAPI {
   getBackendToken: () => Promise<string>;
   setCurrentFile: (path: string) => Promise<void>;
   openPath: (path: string) => Promise<string>;
+  getNativePdfCoreStatus: () => Promise<NativePdfCoreStatus>;
   exportNativeAgentSession: (
     request: NativeAgentSessionExportRequest,
   ) => Promise<NativeAgentSessionExportResult>;
@@ -47,6 +61,7 @@ const api: ElectronAPI = {
   getBackendToken: () => ipcRenderer.invoke('app:getBackendToken'),
   setCurrentFile: (path) => ipcRenderer.invoke('app:setCurrentFile', path),
   openPath: (path) => ipcRenderer.invoke('app:openPath', path),
+  getNativePdfCoreStatus: () => ipcRenderer.invoke('app:getNativePdfCoreStatus'),
   exportNativeAgentSession: (request) => ipcRenderer.invoke('session:exportNativeAgent', request),
   getAgentKind: () => ipcRenderer.invoke('agent:getKind'),
   setAgentKind: (kind) => ipcRenderer.invoke('agent:setKind', kind),

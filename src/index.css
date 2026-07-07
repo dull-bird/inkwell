@@ -412,6 +412,10 @@ select:disabled {
   line-height: 1.45;
 }
 
+.native-core-secondary {
+  color: var(--muted-2);
+}
+
 .catalog-note {
   color: var(--muted);
   font-size: 12px;

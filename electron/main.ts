@@ -47,6 +47,7 @@ process.on('unhandledRejection', (reason) => reportFatalToRenderer('unhandledRej
 // only ever learns it via IPC, never by reading the env directly, so a
 // compromised web page loaded in the renderer can't read it out of band.
 const backendToken = randomUUID();
+const PDF4QT_HOST_ENV = 'INKWELL_PDF4QT_HOST';
 
 let mainWindow: BrowserWindow | null = null;
 let backendProcess: ChildProcess | null = null;
@@ -65,6 +66,35 @@ interface NativeAgentSessionExportRequest {
   nextPrompt: string;
   activePdfPath?: string | null;
   hasUnsavedPreviewOperations: boolean;
+}
+
+function getNativePdfCoreStatus() {
+  const hostPath = process.env[PDF4QT_HOST_ENV]?.trim();
+  if (hostPath && existsSync(hostPath)) {
+    return {
+      mode: 'pdf4qt-ready',
+      renderer: 'PDF4QT',
+      writeEngine: 'PDF4QT command bridge',
+      pdf4qt: { available: true, envVar: PDF4QT_HOST_ENV, hostPath },
+      message: 'PDF4QT native core ready.',
+    };
+  }
+  if (hostPath) {
+    return {
+      mode: 'pdf4qt-missing',
+      renderer: 'pdf.js',
+      writeEngine: 'PyMuPDF',
+      pdf4qt: { available: false, envVar: PDF4QT_HOST_ENV, hostPath },
+      message: `PDF4QT host configured but unavailable: ${hostPath}`,
+    };
+  }
+  return {
+    mode: 'pdfjs-fallback',
+    renderer: 'pdf.js',
+    writeEngine: 'PyMuPDF',
+    pdf4qt: { available: false, envVar: PDF4QT_HOST_ENV },
+    message: `PDF4QT host not configured. Set ${PDF4QT_HOST_ENV} to test the native core bridge.`,
+  };
 }
 
 function findAvailablePort(preferred: number): Promise<number> {
@@ -245,6 +275,7 @@ ipcMain.handle('dialog:openFolder', async () => {
 
 ipcMain.handle('app:getBackendUrl', () => `http://127.0.0.1:${backendPort}`);
 ipcMain.handle('app:getBackendToken', () => backendToken);
+ipcMain.handle('app:getNativePdfCoreStatus', () => getNativePdfCoreStatus());
 
 ipcMain.handle('app:setCurrentFile', (_event, path: string) => {
   currentPdfPath = path;
