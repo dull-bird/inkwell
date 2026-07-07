@@ -199,6 +199,41 @@ def add_comment(
         doc.close()
 
 
+def add_typed_signature(
+    src: str | Path,
+    dst: str | Path,
+    page: int,
+    point: Point,
+    text: str,
+    signer: str = "Sparrow",
+    font_size: float = 20,
+) -> None:
+    """Add a visible typed signature as a standard FreeText annotation."""
+    signature = text.strip()
+    if not signature:
+        raise ValueError("Signature text cannot be empty")
+
+    doc = open_document(src)
+    try:
+        target_page = doc[page]
+        width = max(120, fitz.get_text_length(signature, fontsize=font_size, fontname="helv") + 24)
+        height = max(36, font_size + 18)
+        rect = fitz.Rect(point.x, point.y, point.x + width, point.y + height)
+        annot = target_page.add_freetext_annot(
+            rect,
+            signature,
+            fontsize=font_size,
+            fontname="helv",
+            text_color=(0, 0, 0),
+            fill_color=(1, 1, 1),
+        )
+        annot.set_info(title=signer or "Sparrow", subject="Typed signature", content=signature)
+        annot.update()
+        doc.save(str(dst), garbage=4, deflate=True)
+    finally:
+        doc.close()
+
+
 def merge_pdfs(paths: list[str | Path], dst: str | Path) -> None:
     doc = fitz.open()
     try:

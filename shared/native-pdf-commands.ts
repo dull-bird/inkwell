@@ -3,6 +3,9 @@ export type NativePdfCommandName =
   | 'document_info'
   | 'find_text'
   | 'preview_highlights'
+  | 'read_form_fields'
+  | 'fill_form'
+  | 'typed_signature'
   | 'apply_operations'
   | 'undo'
   | 'redo'
@@ -38,6 +41,24 @@ export const NATIVE_PDF_COMMANDS: NativePdfCommandSpec[] = [
     name: 'preview_highlights',
     description: 'Create undoable preview highlight operations without writing a PDF file.',
     changesDocument: false,
+    transport: 'json-rpc',
+  },
+  {
+    name: 'read_form_fields',
+    description: 'Read fillable AcroForm fields with type, value, page, and rectangle metadata.',
+    changesDocument: false,
+    transport: 'json-rpc',
+  },
+  {
+    name: 'fill_form',
+    description: 'Set fillable form field values by name and update the native operation stack.',
+    changesDocument: true,
+    transport: 'json-rpc',
+  },
+  {
+    name: 'typed_signature',
+    description: 'Add a visible typed signature annotation at a chosen PDF coordinate.',
+    changesDocument: true,
     transport: 'json-rpc',
   },
   {

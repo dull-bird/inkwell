@@ -32,6 +32,21 @@ def make_multi_page_sample(path: Path, page_count: int = 3) -> None:
     doc.close()
 
 
+def make_form_sample(path: Path) -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 72), "Name", fontsize=12, fontname="helv")
+    widget = fitz.Widget()
+    widget.field_name = "applicant_name"
+    widget.field_label = "Applicant name"
+    widget.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+    widget.field_value = ""
+    widget.rect = fitz.Rect(140, 55, 330, 82)
+    page.add_widget(widget)
+    doc.save(path)
+    doc.close()
+
+
 class PdfEngineHeadingTests(unittest.TestCase):
     def test_detect_heading_highlights_returns_only_large_text_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -172,6 +187,62 @@ class PdfEngineHeadingTests(unittest.TestCase):
                 self.assertEqual(0, doc.authenticate("wrong"))
                 self.assertGreater(doc.authenticate("secret"), 0)
                 self.assertIn("Page 1", doc[0].get_text())
+            finally:
+                doc.close()
+
+
+    def test_read_form_fields_returns_widget_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf_path = Path(tmp) / "form.pdf"
+            make_form_sample(pdf_path)
+
+            fields = pdf_engine.read_form_fields(pdf_path)
+
+            self.assertEqual(1, len(fields))
+            self.assertEqual("applicant_name", fields[0].name)
+            self.assertEqual("Text", fields[0].type)
+            self.assertEqual(0, fields[0].page)
+            self.assertEqual(pdf_engine.Rect(140.0, 55.0, 330.0, 82.0), fields[0].rect)
+
+    def test_fill_form_fields_writes_sibling_pdf_and_reports_missing_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf_path = Path(tmp) / "form.pdf"
+            out_path = Path(tmp) / "form_filled.pdf"
+            make_form_sample(pdf_path)
+
+            missing = pdf_engine.fill_form_fields(
+                pdf_path,
+                out_path,
+                {"applicant_name": "Lei Li", "unknown_field": "ignored"},
+            )
+
+            self.assertEqual(["unknown_field"], missing)
+            fields = pdf_engine.read_form_fields(out_path)
+            self.assertEqual("Lei Li", fields[0].value)
+
+    def test_add_typed_signature_writes_standard_free_text_annotation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf_path = Path(tmp) / "sample.pdf"
+            out_path = Path(tmp) / "sample_signed.pdf"
+            make_heading_sample(pdf_path)
+
+            pdf_engine.add_typed_signature(
+                pdf_path,
+                out_path,
+                page=0,
+                point=pdf_engine.Point(96, 520),
+                text="Lei Li",
+                signer="Lei Li",
+            )
+
+            doc = fitz.open(out_path)
+            try:
+                annotations = [
+                    (annot.type[1], annot.info.get("content"), annot.info.get("title"))
+                    for annot in (doc[0].annots() or [])
+                ]
+                self.assertEqual([("FreeText", "Lei Li", "Lei Li")], annotations)
+                self.assertIn("Lei Li", doc[0].get_text())
             finally:
                 doc.close()
 

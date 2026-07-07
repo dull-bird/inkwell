@@ -15,6 +15,9 @@ test('defines the first PDF4QT host command surface', () => {
       'document_info',
       'find_text',
       'preview_highlights',
+      'read_form_fields',
+      'fill_form',
+      'typed_signature',
       'apply_operations',
       'undo',
       'redo',
@@ -27,6 +30,9 @@ test('distinguishes read-only commands from mutating commands', () => {
   assert.equal(nativePdfCommandChangesDocument('document_info'), false);
   assert.equal(nativePdfCommandChangesDocument('find_text'), false);
   assert.equal(nativePdfCommandChangesDocument('preview_highlights'), false);
+  assert.equal(nativePdfCommandChangesDocument('read_form_fields'), false);
+  assert.equal(nativePdfCommandChangesDocument('fill_form'), true);
+  assert.equal(nativePdfCommandChangesDocument('typed_signature'), true);
   assert.equal(nativePdfCommandChangesDocument('apply_operations'), true);
   assert.equal(nativePdfCommandChangesDocument('undo'), true);
   assert.equal(nativePdfCommandChangesDocument('redo'), true);

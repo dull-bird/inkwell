@@ -30,7 +30,13 @@ import SparrowMark from './components/SparrowMark';
 import { buildAiBrushPrompt, validateAiBrushRun } from './aiBrush';
 import { buildSemanticHeadingHighlightPrompt } from './agentPrompts';
 import { analyzeDocumentText, type DocumentAnalysis } from './documentAnalysis';
-import { buildEncryptRequest, buildWatermarkRequest, describeFileOutput } from './pdfFileActions';
+import {
+  buildEncryptRequest,
+  buildFillFormRequest,
+  buildTypedSignatureRequest,
+  buildWatermarkRequest,
+  describeFileOutput,
+} from './pdfFileActions';
 import { parsePageRanges } from './pdfRanges';
 import { buildRemainingPageOrder, buildRotationMap } from './pageOperations';
 import { nativePdfCoreStatusSummary, type NativePdfCoreStatus } from '../shared/native-pdf-core';
@@ -99,6 +105,10 @@ interface DocumentInfoResponse {
   page_count: number;
 }
 
+interface FormFieldsResponse {
+  fields: Array<{ name: string; type: string; value: unknown; page: number }>;
+}
+
 interface PendingAgentPrompt {
   id: string;
   text: string;
@@ -125,6 +135,8 @@ export default function App() {
   const [rotationDegrees, setRotationDegrees] = useState(90);
   const [watermarkText, setWatermarkText] = useState('Internal Review');
   const [encryptPassword, setEncryptPassword] = useState('');
+  const [formValuesJson, setFormValuesJson] = useState('{\n  "applicant_name": ""\n}');
+  const [signatureText, setSignatureText] = useState('');
   const [aiBrushInstruction, setAiBrushInstruction] = useState('highlight claims that need citations');
   const [skillSearch, setSkillSearch] = useState('');
   const [sidebarView, setSidebarView] = useState<SidebarView>('files');
@@ -548,6 +560,71 @@ export default function App() {
     }
   }, [activeDocument, backendPost, encryptPassword]);
 
+  const readFormFields = useCallback(async () => {
+    if (!activeDocument) {
+      setStatus('Open a PDF first.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await backendPost<FormFieldsResponse>('/form-fields', { path: activeDocument.path });
+      const draft = Object.fromEntries(result.fields.map((field) => [field.name, field.value ?? '']));
+      setFormValuesJson(JSON.stringify(draft, null, 2));
+      setStatus(`检测到 ${result.fields.length} 个可填写表单字段。`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeDocument, backendPost]);
+
+  const fillFormFields = useCallback(async () => {
+    if (!activeDocument) {
+      setStatus('Open a PDF first.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await backendPost<FileOutputResponse>('/fill-form', buildFillFormRequest(activeDocument.path, formValuesJson));
+      setAgentOutput(result.output);
+      await loadPdf(result.output);
+      setStatus(describeFileOutput('fill-form', result.output));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeDocument, backendPost, formValuesJson, loadPdf]);
+
+  const addTypedSignature = useCallback(async () => {
+    if (!activeDocument) {
+      setStatus('Open a PDF first.');
+      return;
+    }
+    if (!commentTarget) {
+      setStatus('Click a PDF page to choose signature position first.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const request = buildTypedSignatureRequest(
+        activeDocument.path,
+        commentTarget.page,
+        commentTarget.x,
+        commentTarget.y,
+        signatureText,
+      );
+      const result = await backendPost<FileOutputResponse>('/signature', request);
+      setAgentOutput(result.output);
+      await loadPdf(result.output);
+      setStatus(describeFileOutput('signature', result.output));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeDocument, backendPost, commentTarget, loadPdf, signatureText]);
+
   const runAiBrush = useCallback(() => {
     if (!activeDocument) {
       setStatus('Open a PDF first.');
@@ -735,6 +812,8 @@ export default function App() {
                   commentTarget={commentTarget}
                   watermarkText={watermarkText}
                   encryptPassword={encryptPassword}
+                  formValuesJson={formValuesJson}
+                  signatureText={signatureText}
                   aiBrushInstruction={aiBrushInstruction}
                   sessionNotes={sessionNotes}
                   nativeCoreStatus={nativeCoreStatus}
@@ -756,6 +835,11 @@ export default function App() {
                   onAddWatermark={addWatermark}
                   onSetEncryptPassword={setEncryptPassword}
                   onEncryptPdf={encryptPdf}
+                  onReadFormFields={readFormFields}
+                  onSetFormValuesJson={setFormValuesJson}
+                  onFillFormFields={fillFormFields}
+                  onSetSignatureText={setSignatureText}
+                  onAddTypedSignature={addTypedSignature}
                   onSetAiBrushInstruction={setAiBrushInstruction}
                   onRunAiBrush={runAiBrush}
                   onSetSessionNotes={setSessionNotes}
@@ -1069,6 +1153,8 @@ interface ToolsPaneProps {
   commentTarget: CommentTarget | null;
   watermarkText: string;
   encryptPassword: string;
+  formValuesJson: string;
+  signatureText: string;
   aiBrushInstruction: string;
   sessionNotes: string;
   nativeCoreStatus: NativePdfCoreStatus | null;
@@ -1090,6 +1176,11 @@ interface ToolsPaneProps {
   onAddWatermark: () => void;
   onSetEncryptPassword: (value: string) => void;
   onEncryptPdf: () => void;
+  onReadFormFields: () => void;
+  onSetFormValuesJson: (value: string) => void;
+  onFillFormFields: () => void;
+  onSetSignatureText: (value: string) => void;
+  onAddTypedSignature: () => void;
   onSetAiBrushInstruction: (value: string) => void;
   onRunAiBrush: () => void;
   onSetSessionNotes: (value: string) => void;
@@ -1188,6 +1279,41 @@ function ToolsPane(props: ToolsPaneProps) {
                 props.commentTarget.y,
               )}`
             : 'Click a page to choose comment position.'}
+        </div>
+      </section>
+
+      <section className="sidebar-section">
+        <div className="section-title">Fill & Sign</div>
+        <div className="page-tools">
+          <textarea
+            className="session-notes-input compact-textarea"
+            value={props.formValuesJson}
+            onChange={(event) => props.onSetFormValuesJson(event.target.value)}
+            placeholder='{"field_name": "value"}'
+            rows={4}
+            disabled={disabled}
+          />
+          <button onClick={props.onReadFormFields} disabled={disabled}>
+            <FileText size={15} />
+            Detect fields
+          </button>
+          <button onClick={props.onFillFormFields} disabled={disabled}>
+            <FileText size={15} />
+            Fill form
+          </button>
+          <input
+            value={props.signatureText}
+            onChange={(event) => props.onSetSignatureText(event.target.value)}
+            placeholder="Typed signature"
+            disabled={disabled}
+          />
+          <button onClick={props.onAddTypedSignature} disabled={disabled || !props.commentTarget}>
+            <Stamp size={15} />
+            Sign here
+          </button>
+        </div>
+        <div className="field-hint">
+          Click a page to choose signature position. Typed signatures are visible FreeText annotations, not certificate signatures.
         </div>
       </section>
 

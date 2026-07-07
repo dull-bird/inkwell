@@ -391,6 +391,11 @@ select:disabled {
   line-height: 1.45;
 }
 
+.compact-textarea {
+  grid-column: 1 / -1;
+  min-height: 88px;
+}
+
 .page-tools input {
   grid-column: 1 / -1;
 }

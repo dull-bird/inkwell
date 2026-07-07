@@ -127,6 +127,15 @@ class CommentRequest(BaseModel):
     author: str = "Inkwell"
 
 
+class SignatureRequest(BaseModel):
+    path: str
+    page: int
+    x: float
+    y: float
+    text: str
+    signer: str = "Sparrow"
+
+
 class EncryptRequest(BaseModel):
     path: str
     user_pw: str
@@ -281,6 +290,24 @@ def comment(req: CommentRequest) -> JSONResponse:
             point=pdf_engine.Point(req.x, req.y),
             text=req.text,
             author=req.author,
+        )
+        return JSONResponse({"source": str(src), "output": str(dst)})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/signature")
+def signature(req: SignatureRequest) -> JSONResponse:
+    try:
+        src = Path(req.path)
+        dst = src.with_stem(f"{src.stem}_signed")
+        pdf_engine.add_typed_signature(
+            src,
+            dst,
+            page=req.page,
+            point=pdf_engine.Point(req.x, req.y),
+            text=req.text,
+            signer=req.signer,
         )
         return JSONResponse({"source": str(src), "output": str(dst)})
     except Exception as e:

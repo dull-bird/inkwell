@@ -17,6 +17,9 @@ speaks a narrow JSON command protocol:
 - `open_document`
 - `document_info`
 - `find_text`
+- `read_form_fields`
+- `fill_form`
+- `typed_signature`
 - `preview_highlights`
 - `apply_operations`
 - `undo`
@@ -26,7 +29,7 @@ speaks a narrow JSON command protocol:
 The canonical command list is tracked in
 `shared/native-pdf-commands.ts`. Keep the JSON protocol small: renderer UI,
 ACP tools, and the native host should all agree on these commands before adding
-specialized tools such as form fill, redaction, or signatures.
+specialized tools such as redaction, certificate signatures, or OCR repair.
 
 Manual tools and agent tools should both call that bridge so the undo stack,
 annotation model, and saved output behavior stay identical.

@@ -336,6 +336,26 @@ export class AgentSession {
           return textResult(result);
         },
       }),
+      add_typed_signature: tool({
+        description:
+          'Add a visible typed signature as a standard FreeText annotation and save a new "<name>_signed.pdf" copy. ' +
+          'Use page/x/y coordinates in PDF points, page 0-indexed. This is not a certificate-based digital signature.',
+        inputSchema: z.object({
+          path: z.string().optional().describe('Absolute path PDF. Defaults to the currently open document.'),
+          page: z.number().int().describe('0-indexed page number.'),
+          x: z.number().describe('X coordinate in PDF points from the left edge.'),
+          y: z.number().describe('Y coordinate in PDF points from the top edge.'),
+          text: z.string().describe('Visible signature text.'),
+          signer: z.string().optional().describe('Signer metadata. Defaults to signature text.'),
+        }),
+        execute: async ({ path, page, x, y, text, signer }) => {
+          const result = (await this.backendCall('/signature', {
+            body: { path: this.resolvePath(path), page, x, y, text, signer: signer ?? text },
+          })) as { output: string };
+          notifyOutput(result.output);
+          return textResult(result);
+        },
+      }),
       encrypt_pdf: tool({
         description: 'Password-protect a PDF with AES-256 encryption, saved as "<name>_encrypted.pdf".',
         inputSchema: z.object({
@@ -460,7 +480,8 @@ export class AgentSession {
             '"this PDF", "the document", "it", etc. without giving a path, operate on that file directly — ' +
             'do not ask them for a path or a URL first. For visual edits such as highlighting or annotations, ' +
             'return preview operations first so Inkwell can show them immediately. Do not call apply_pdf_highlights ' +
-            'unless the user explicitly asks to save, apply, write, export, or create a new PDF copy.'
+          'unless the user explicitly asks to save, apply, write, export, or create a new PDF copy. ' +
+          'For form filling and typed signatures, read fields first when useful and save only the sibling output PDF.'
           : 'No PDF is currently open in Inkwell. If the user refers to "the PDF" without specifying one, ' +
             'tell them to open a file first.',
         prompt: [pdfContext, reasoningInstruction(options.reasoningLevel), prompt].filter(Boolean).join('\n\n'),
