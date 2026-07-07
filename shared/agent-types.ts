@@ -1,4 +1,5 @@
 import type { NativePdfCoreStatus } from './native-pdf-core';
+import type { NativePdfCommandName } from './native-pdf-commands';
 
 // Types shared between Electron main process (electron/agent.ts,
 // electron/preload.ts) and renderer (src/). Kept dependency-free so
@@ -59,6 +60,7 @@ export interface ElectronAPI {
   setCurrentFile: (path: string) => Promise<void>;
   openPath: (path: string) => Promise<string>;
   getNativePdfCoreStatus: () => Promise<NativePdfCoreStatus>;
+  runNativePdfCommand: (method: NativePdfCommandName, params?: Record<string, unknown>) => Promise<unknown>;
   exportNativeAgentSession: (
     request: NativeAgentSessionExportRequest,
   ) => Promise<NativeAgentSessionExportResult>;

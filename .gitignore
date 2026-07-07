@@ -2,6 +2,8 @@ node_modules/
 dist/
 dist-electron/
 release/
+shared/*.js
+shared/*.d.ts
 backend/.venv/
 backend/**/__pycache__/
 backend/*.egg-info/

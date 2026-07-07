@@ -31,6 +31,24 @@ The canonical command list is tracked in
 ACP tools, and the native host should all agree on these commands before adding
 specialized tools such as redaction, certificate signatures, or OCR repair.
 
+Electron now has a tested bridge client in `electron/nativePdfBridge.ts`.
+The host process contract is:
+
+```text
+inkwell-pdf4qt-host --stdio-json
+```
+
+Each stdin/stdout line is one JSON-RPC-like object:
+
+```json
+{"jsonrpc":"2.0","id":"...","method":"document_info","params":{"path":"/file.pdf"}}
+{"jsonrpc":"2.0","id":"...","result":{"page_count":3}}
+```
+
+The renderer can reach this through the internal `nativePdf:command` IPC once a
+valid host path is configured through `INKWELL_PDF4QT_HOST`. Until then, all
+runtime behavior falls back to pdf.js and the PyMuPDF backend.
+
 Manual tools and agent tools should both call that bridge so the undo stack,
 annotation model, and saved output behavior stay identical.
 

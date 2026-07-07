@@ -5,6 +5,18 @@ export type { AgentEvent, AgentKind, AgentPromptOptions };
 
 type PdfSessionExportMode = 'none' | 'reference' | 'copy';
 type NativePdfCoreMode = 'pdfjs-fallback' | 'pdf4qt-missing' | 'pdf4qt-ready';
+type NativePdfCommandName =
+  | 'open_document'
+  | 'document_info'
+  | 'find_text'
+  | 'preview_highlights'
+  | 'read_form_fields'
+  | 'fill_form'
+  | 'typed_signature'
+  | 'apply_operations'
+  | 'undo'
+  | 'redo'
+  | 'save_as';
 
 interface NativePdfCoreStatus {
   mode: NativePdfCoreMode;
@@ -44,6 +56,7 @@ export interface ElectronAPI {
   setCurrentFile: (path: string) => Promise<void>;
   openPath: (path: string) => Promise<string>;
   getNativePdfCoreStatus: () => Promise<NativePdfCoreStatus>;
+  runNativePdfCommand: (method: NativePdfCommandName, params?: Record<string, unknown>) => Promise<unknown>;
   exportNativeAgentSession: (
     request: NativeAgentSessionExportRequest,
   ) => Promise<NativeAgentSessionExportResult>;
@@ -62,6 +75,7 @@ const api: ElectronAPI = {
   setCurrentFile: (path) => ipcRenderer.invoke('app:setCurrentFile', path),
   openPath: (path) => ipcRenderer.invoke('app:openPath', path),
   getNativePdfCoreStatus: () => ipcRenderer.invoke('app:getNativePdfCoreStatus'),
+  runNativePdfCommand: (method, params) => ipcRenderer.invoke('nativePdf:command', method, params),
   exportNativeAgentSession: (request) => ipcRenderer.invoke('session:exportNativeAgent', request),
   getAgentKind: () => ipcRenderer.invoke('agent:getKind'),
   setAgentKind: (kind) => ipcRenderer.invoke('agent:setKind', kind),

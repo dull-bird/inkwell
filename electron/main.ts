@@ -21,6 +21,7 @@ import { spawn, ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { AgentSession, type AgentEvent, type AgentKind, type AgentPromptOptions } from './agent.js';
+import { NativePdfHostClient, type NativePdfCommandName } from './nativePdfBridge.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -56,6 +57,7 @@ let currentAgentKind: AgentKind = 'claude';
 let currentPdfPath: string | null = null;
 let backendPort = 18765;
 const __dirname = dirname(fileURLToPath(import.meta.url));
+let nativePdfHostClient: NativePdfHostClient | null = null;
 
 type PdfSessionExportMode = 'none' | 'reference' | 'copy';
 
@@ -95,6 +97,15 @@ function getNativePdfCoreStatus() {
     pdf4qt: { available: false, envVar: PDF4QT_HOST_ENV },
     message: `PDF4QT host not configured. Set ${PDF4QT_HOST_ENV} to test the native core bridge.`,
   };
+}
+
+function getNativePdfHostClient(): NativePdfHostClient {
+  const hostPath = process.env[PDF4QT_HOST_ENV]?.trim();
+  if (!hostPath || !existsSync(hostPath)) {
+    throw new Error(`PDF4QT host is not available. Set ${PDF4QT_HOST_ENV} to a valid host executable.`);
+  }
+  if (!nativePdfHostClient) nativePdfHostClient = new NativePdfHostClient(hostPath);
+  return nativePdfHostClient;
 }
 
 function findAvailablePort(preferred: number): Promise<number> {
@@ -179,6 +190,7 @@ app.on('window-all-closed', () => {
   if (backendProcess) {
     backendProcess.kill();
   }
+  nativePdfHostClient?.dispose();
   for (const session of agentSessions.values()) session.cleanup();
   if (process.platform !== 'darwin') app.quit();
 });
@@ -276,6 +288,11 @@ ipcMain.handle('dialog:openFolder', async () => {
 ipcMain.handle('app:getBackendUrl', () => `http://127.0.0.1:${backendPort}`);
 ipcMain.handle('app:getBackendToken', () => backendToken);
 ipcMain.handle('app:getNativePdfCoreStatus', () => getNativePdfCoreStatus());
+ipcMain.handle(
+  'nativePdf:command',
+  async (_event, method: NativePdfCommandName, params: Record<string, unknown> = {}) =>
+    getNativePdfHostClient().execute(method, params),
+);
 
 ipcMain.handle('app:setCurrentFile', (_event, path: string) => {
   currentPdfPath = path;

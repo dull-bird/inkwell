@@ -23,6 +23,9 @@ export function createBrowserPreviewElectronApi(): ElectronAPI {
       pdf4qt: { available: false, envVar: 'INKWELL_PDF4QT_HOST' },
       message: 'PDF4QT host not configured. Set INKWELL_PDF4QT_HOST to test the native core bridge.',
     }),
+    runNativePdfCommand: async () => {
+      throw new Error('Native PDF host is not available in browser preview mode.');
+    },
     exportNativeAgentSession: async () => ({
       directory: '/tmp/sparrow-agent-export',
       handoffPath: '/tmp/sparrow-agent-export/handoff.md',
