@@ -1,6 +1,8 @@
 import { useCallback, useMemo, useState } from 'react';
 import {
   Bot,
+  ChevronRight,
+  File,
   FileText,
   FolderOpen,
   Highlighter,
@@ -10,6 +12,7 @@ import {
   Moon,
   PanelRight,
   Puzzle,
+  PackageOpen,
   RotateCw,
   Scissors,
   Search,
@@ -37,8 +40,20 @@ import {
   type AiPermissionMode,
 } from './privacy';
 import { filterSkillCatalog, SPARROW_SKILLS } from './skillCatalog';
+import {
+  buildNativeAgentHandoffMarkdown,
+  buildNativeAgentNextPrompt,
+  normalizeSessionNotes,
+  type ChatTranscriptMessage,
+  type SessionExportDocument,
+} from './sessionExport';
 import type { WorkspaceDocumentContext } from './workspaceContext';
-import { normalizePdfPaths } from './workspaceFiles';
+import {
+  buildWorkspaceTree,
+  normalizePdfPaths,
+  normalizeWorkspacePaths,
+  type WorkspaceTreeNode,
+} from './workspaceFiles';
 import { buildMergePaths } from './workspaceMerge';
 
 interface BackendState {
@@ -90,6 +105,7 @@ interface PendingAgentPrompt {
 
 export default function App() {
   const [documents, setDocuments] = useState<SparrowDocument[]>([]);
+  const [workspacePaths, setWorkspacePaths] = useState<string[]>([]);
   const [activeDocumentId, setActiveDocumentId] = useState<string | null>(null);
   const [backend, setBackend] = useState<BackendState | null>(null);
   const [highlightsByDocument, setHighlightsByDocument] = useState<Record<string, HighlightOperation[]>>({});
@@ -98,6 +114,9 @@ export default function App() {
   const [redoStack, setRedoStack] = useState<Array<{ documentId: string; operations: HighlightOperation[] }>>([]);
   const [agentOutput, setAgentOutput] = useState<string | null>(null);
   const [splitOutputDir, setSplitOutputDir] = useState<string | null>(null);
+  const [sessionExportDir, setSessionExportDir] = useState<string | null>(null);
+  const [sessionNotes, setSessionNotes] = useState('');
+  const [chatTranscript, setChatTranscript] = useState<ChatTranscriptMessage[]>([]);
   const [commentText, setCommentText] = useState('Needs review');
   const [splitRanges, setSplitRanges] = useState('');
   const [pageEditRanges, setPageEditRanges] = useState('');
@@ -142,6 +161,10 @@ export default function App() {
       })),
     [documents],
   );
+  const combinedWorkspacePaths = useMemo(
+    () => normalizeWorkspacePaths([...workspacePaths, ...documents.map((document) => document.path)]),
+    [documents, workspacePaths],
+  );
 
   const pdfUrl = useMemo(() => {
     if (!backend || !activeDocument) return null;
@@ -158,6 +181,10 @@ export default function App() {
 
   const setDocumentPatch = useCallback((id: string, patch: Partial<SparrowDocument>) => {
     setDocuments((current) => current.map((document) => (document.id === id ? { ...document, ...patch } : document)));
+  }, []);
+
+  const addWorkspacePaths = useCallback((paths: string[]) => {
+    setWorkspacePaths((current) => normalizeWorkspacePaths([...current, ...paths]));
   }, []);
 
   const loadDocumentInfo = useCallback(
@@ -185,6 +212,7 @@ export default function App() {
 
   const loadPdf = useCallback(
     async (path: string) => {
+      addWorkspacePaths([path]);
       const [backendUrl, backendToken] = await Promise.all([
         window.electronAPI.getBackendUrl(),
         window.electronAPI.getBackendToken(),
@@ -213,7 +241,7 @@ export default function App() {
       setStatus(`正在打开 ${document.title}。不会自动读取正文。`);
       void loadDocumentInfo(document, nextBackend);
     },
-    [activateDocument, aiPermissionMode, documents, loadDocumentInfo],
+    [activateDocument, addWorkspacePaths, aiPermissionMode, documents, loadDocumentInfo],
   );
 
   const handleOpenFile = async () => {
@@ -223,16 +251,19 @@ export default function App() {
   };
 
   const handleOpenFolder = async () => {
-    const paths = normalizePdfPaths(await window.electronAPI.openPdfFolder());
+    const paths = normalizeWorkspacePaths(await window.electronAPI.openPdfFolder());
     if (paths.length === 0) {
-      setStatus('No PDF files found in folder.');
+      setStatus('No PDF or Markdown files found in folder.');
       return;
     }
-    setStatus(`Adding ${paths.length} PDFs to workspace.`);
-    for (const path of paths) {
+    addWorkspacePaths(paths);
+    const pdfPaths = normalizePdfPaths(paths);
+    const markdownCount = paths.length - pdfPaths.length;
+    setStatus(`Adding ${pdfPaths.length} PDFs and ${markdownCount} Markdown files to workspace.`);
+    for (const path of pdfPaths) {
       await loadPdf(path);
     }
-    setStatus(`Added ${paths.length} PDFs to workspace.`);
+    setStatus(`Added ${pdfPaths.length} PDFs and ${markdownCount} Markdown files to workspace.`);
   };
 
   const analyzeActiveDocument = useCallback(async () => {
@@ -532,6 +563,66 @@ export default function App() {
     }
   }, []);
 
+  const toSessionExportDocument = useCallback(
+    (document: SparrowDocument): SessionExportDocument => ({
+      title: document.title,
+      path: document.path,
+      pageCount: document.pageCount,
+      analysisLabel: document.analysis?.label,
+      analysisSummary: document.analysis?.summary,
+      previewHighlightCount: highlightsByDocument[document.id]?.length ?? 0,
+    }),
+    [highlightsByDocument],
+  );
+
+  const exportNativeAgentSession = useCallback(async () => {
+    const exportedAt = new Date().toISOString();
+    const exportDocuments = documents.map(toSessionExportDocument);
+    const activeExportDocument = activeDocument ? toSessionExportDocument(activeDocument) : null;
+    const notesMarkdown = normalizeSessionNotes(sessionNotes);
+    const nextPrompt = buildNativeAgentNextPrompt({
+      activePdfPath: activeDocument?.path,
+      handoffPath: './handoff.md',
+      notesPath: './notes.md',
+    });
+    const handoffMarkdown = buildNativeAgentHandoffMarkdown({
+      appName: 'Sparrow',
+      exportedAt,
+      activeDocument: activeExportDocument,
+      documents: exportDocuments,
+      workspacePaths: combinedWorkspacePaths,
+      notesMarkdown,
+      transcript: chatTranscript,
+      aiPermissionMode,
+    });
+
+    setBusy(true);
+    try {
+      const result = await window.electronAPI.exportNativeAgentSession({
+        suggestedName: activeDocument?.title ?? 'sparrow-session',
+        handoffMarkdown,
+        notesMarkdown,
+        nextPrompt,
+        activePdfPath: activeDocument?.path ?? null,
+        hasUnsavedPreviewOperations: exportDocuments.some((document) => document.previewHighlightCount > 0),
+      });
+      setSessionExportDir(result.directory);
+      setStatus(`已导出给原生 Agent：${result.directory}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [
+    activeDocument,
+    aiPermissionMode,
+    chatTranscript,
+    combinedWorkspacePaths,
+    documents,
+    sessionNotes,
+    toSessionExportDocument,
+  ]);
+
   const handleFileOutput = useCallback((path: string) => {
     setAgentOutput(path);
     setStatus(`Agent produced ${fileName(path)}`);
@@ -611,6 +702,7 @@ export default function App() {
                 <FilesPane
                   activeDocumentId={activeDocumentId}
                   documents={documents}
+                  workspacePaths={combinedWorkspacePaths}
                   busy={busy}
                   onOpenFile={handleOpenFile}
                   onOpenFolder={handleOpenFolder}
@@ -633,6 +725,7 @@ export default function App() {
                   watermarkText={watermarkText}
                   encryptPassword={encryptPassword}
                   aiBrushInstruction={aiBrushInstruction}
+                  sessionNotes={sessionNotes}
                   aiAllowed={aiAllowed}
                   onAnalyze={analyzeActiveDocument}
                   onHighlightHeadings={highlightHeadings}
@@ -653,6 +746,8 @@ export default function App() {
                   onEncryptPdf={encryptPdf}
                   onSetAiBrushInstruction={setAiBrushInstruction}
                   onRunAiBrush={runAiBrush}
+                  onSetSessionNotes={setSessionNotes}
+                  onExportNativeAgent={exportNativeAgentSession}
                 />
               )}
               {sidebarView === 'skills' && (
@@ -722,6 +817,11 @@ export default function App() {
                   Open split folder
                 </button>
               )}
+              {sessionExportDir && (
+                <button className="ghost-button" onClick={() => void openOutputPath(sessionExportDir)}>
+                  Open handoff
+                </button>
+              )}
             </div>
           </div>
 
@@ -759,10 +859,11 @@ export default function App() {
               }}
               onEnableAi={enableAiForActiveDocument}
               onAnalyzeDocument={analyzeActiveDocument}
-              onFileOutput={handleFileOutput}
-            onSplitOutput={handleSplitOutput}
-            onPreviewHighlights={addHighlightBatch}
-          />
+                onFileOutput={handleFileOutput}
+                onSplitOutput={handleSplitOutput}
+                onPreviewHighlights={addHighlightBatch}
+                onTranscriptChange={setChatTranscript}
+              />
           )}
         </div>
       </div>
@@ -773,6 +874,7 @@ export default function App() {
 interface FilesPaneProps {
   activeDocumentId: string | null;
   documents: SparrowDocument[];
+  workspacePaths: string[];
   busy: boolean;
   onOpenFile: () => void;
   onOpenFolder: () => void;
@@ -783,12 +885,19 @@ interface FilesPaneProps {
 function FilesPane({
   activeDocumentId,
   documents,
+  workspacePaths,
   busy,
   onOpenFile,
   onOpenFolder,
   onActivateDocument,
   onMergeWorkspace,
 }: FilesPaneProps) {
+  const tree = useMemo(() => buildWorkspaceTree(workspacePaths), [workspacePaths]);
+  const documentByPath = useMemo(
+    () => new Map(documents.map((document) => [document.path, document])),
+    [documents],
+  );
+
   return (
     <div className="sidebar-content">
       <div className="sidebar-actions">
@@ -804,7 +913,20 @@ function FilesPane({
 
       <section className="sidebar-section">
         <div className="section-title">Workspace</div>
-        <div className="document-list">
+        {workspacePaths.length === 0 ? (
+          <div className="empty-hint">Open files or folder to start.</div>
+        ) : (
+          <div className="workspace-tree" aria-label={`${tree.rootName} files`}>
+            <div className="workspace-root-label">{tree.rootName}</div>
+            <WorkspaceTreeRows
+              activeDocumentId={activeDocumentId}
+              documentByPath={documentByPath}
+              nodes={tree.children}
+              onActivateDocument={onActivateDocument}
+            />
+          </div>
+        )}
+        <div className="document-list legacy-document-list" aria-hidden="true">
           {documents.length === 0 && <div className="empty-hint">Open files or a folder to start.</div>}
           {documents.map((document) => (
             <button
@@ -829,6 +951,99 @@ function FilesPane({
   );
 }
 
+function WorkspaceTreeRows({
+  activeDocumentId,
+  documentByPath,
+  nodes,
+  onActivateDocument,
+  depth = 0,
+}: {
+  activeDocumentId: string | null;
+  documentByPath: Map<string, SparrowDocument>;
+  nodes: WorkspaceTreeNode[];
+  onActivateDocument: (document: SparrowDocument) => Promise<void>;
+  depth?: number;
+}) {
+  return (
+    <div className="workspace-tree-level">
+      {nodes.map((node) => (
+        <WorkspaceTreeRow
+          key={node.id}
+          activeDocumentId={activeDocumentId}
+          depth={depth}
+          document={documentByPath.get(node.path)}
+          documentByPath={documentByPath}
+          node={node}
+          onActivateDocument={onActivateDocument}
+        />
+      ))}
+    </div>
+  );
+}
+
+function WorkspaceTreeRow({
+  activeDocumentId,
+  depth,
+  document,
+  documentByPath,
+  node,
+  onActivateDocument,
+}: {
+  activeDocumentId: string | null;
+  depth: number;
+  document?: SparrowDocument;
+  documentByPath: Map<string, SparrowDocument>;
+  node: WorkspaceTreeNode;
+  onActivateDocument: (document: SparrowDocument) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(true);
+  const isFolder = node.kind === 'folder';
+  const active = document?.id === activeDocumentId;
+  const Icon = isFolder ? FolderOpen : node.kind === 'markdown' ? File : FileText;
+  const label =
+    document?.status === 'loading'
+      ? 'Loading'
+      : document
+        ? `${document.analysis?.label ?? 'PDF'}${document.pageCount ? ` · ${document.pageCount} pages` : ''}`
+        : node.kind === 'markdown'
+          ? 'Markdown'
+          : 'File';
+
+  return (
+    <>
+      <button
+        className={`workspace-tree-row ${active ? 'active' : ''} ${isFolder ? 'folder' : ''}`}
+        onClick={() => {
+          if (isFolder) {
+            setOpen((value) => !value);
+            return;
+          }
+          if (document) void onActivateDocument(document);
+        }}
+        style={{ paddingLeft: 8 + depth * 14 }}
+      >
+        {isFolder ? (
+          <ChevronRight className={`tree-caret ${open ? 'open' : ''}`} size={13} />
+        ) : (
+          <span className="tree-caret-spacer" />
+        )}
+        <Icon size={15} />
+        <span className="workspace-tree-name">{node.name}</span>
+        <span className="workspace-tree-kind">{label}</span>
+      </button>
+      {isFolder && open && node.children && (
+        <WorkspaceTreeRows
+          activeDocumentId={activeDocumentId}
+          depth={depth + 1}
+          documentByPath={documentByPath}
+          nodes={node.children}
+          onActivateDocument={onActivateDocument}
+        />
+      )}
+    </>
+  );
+}
+
 interface ToolsPaneProps {
   activeDocument: SparrowDocument | null;
   busy: boolean;
@@ -843,6 +1058,7 @@ interface ToolsPaneProps {
   watermarkText: string;
   encryptPassword: string;
   aiBrushInstruction: string;
+  sessionNotes: string;
   aiAllowed: boolean;
   onAnalyze: () => void;
   onHighlightHeadings: () => void;
@@ -863,6 +1079,8 @@ interface ToolsPaneProps {
   onEncryptPdf: () => void;
   onSetAiBrushInstruction: (value: string) => void;
   onRunAiBrush: () => void;
+  onSetSessionNotes: (value: string) => void;
+  onExportNativeAgent: () => void;
 }
 
 function ToolsPane(props: ToolsPaneProps) {
@@ -984,6 +1202,24 @@ function ToolsPane(props: ToolsPaneProps) {
             <Lock size={15} />
             Encrypt
           </button>
+        </div>
+      </section>
+
+      <section className="sidebar-section">
+        <div className="section-title">Agent Handoff</div>
+        <textarea
+          className="session-notes-input"
+          value={props.sessionNotes}
+          onChange={(event) => props.onSetSessionNotes(event.target.value)}
+          placeholder="Markdown notes for the handoff..."
+          rows={5}
+        />
+        <button className="workspace-merge-button" onClick={props.onExportNativeAgent} disabled={props.busy}>
+          <PackageOpen size={15} />
+          Export to Agent
+        </button>
+        <div className="field-hint">
+          Exports handoff.md, notes.md, chat transcript and PDF reference for Claude Code or Codex CLI.
         </div>
       </section>
 

@@ -16,6 +16,7 @@ import type { DocumentAnalysis, SuggestedAction } from '../documentAnalysis';
 import { derivePdfToolAction } from '../pdfToolResults';
 import type { AiPermissionMode } from '../privacy';
 import { buildResearchPrompt } from '../researchContext';
+import type { ChatTranscriptMessage } from '../sessionExport';
 import { buildWorkspaceSummaryPrompt, type WorkspaceDocumentContext } from '../workspaceContext';
 import AgentLogo from './AgentLogo';
 import type { HighlightOperation } from './PdfViewer';
@@ -56,6 +57,7 @@ interface ChatPanelProps {
   onFileOutput: (path: string) => void;
   onSplitOutput: (outputDir: string, fileCount: number) => void;
   onPreviewHighlights: (operations: HighlightOperation[]) => void;
+  onTranscriptChange?: (messages: ChatTranscriptMessage[]) => void;
 }
 
 type AgentStreamEvent = AgentEvent & { turnId?: string };
@@ -93,6 +95,21 @@ function greeting(kind: AgentKind): Message {
   };
 }
 
+function messageToTranscript(message: Message): ChatTranscriptMessage {
+  const partsText = message.parts.map(partToTranscriptText).filter(Boolean).join('\n\n');
+  return {
+    role: message.role,
+    text: message.text || partsText,
+  };
+}
+
+function partToTranscriptText(part: Part): string {
+  if (part.kind === 'text') return part.text;
+  if (part.kind === 'reasoning') return `[reasoning]\n${part.text}`;
+  const result = part.done ? `\nResult: ${JSON.stringify(part.result)}` : '';
+  return `[tool:${part.toolName}]\nArgs: ${JSON.stringify(part.args)}${result}`;
+}
+
 const initialMessages: Record<AgentKind, Message[]> = {
   claude: [greeting('claude')],
   codex: [greeting('codex')],
@@ -114,6 +131,7 @@ export default function ChatPanel({
   onFileOutput,
   onSplitOutput,
   onPreviewHighlights,
+  onTranscriptChange,
 }: ChatPanelProps) {
   const [agentKind, setAgentKindState] = useState<AgentKind>('claude');
   const [messagesByAgent, setMessagesByAgent] = useState<Record<AgentKind, Message[]>>(initialMessages);
@@ -145,6 +163,10 @@ export default function ChatPanel({
     agentKindRef.current = agentKind;
     stickToBottomRef.current = true;
   }, [agentKind]);
+
+  useEffect(() => {
+    onTranscriptChange?.(messages.map(messageToTranscript));
+  }, [messages, onTranscriptChange]);
 
   const updateMessages = useCallback((kind: AgentKind, updater: (messages: Message[]) => Message[]) => {
     setMessagesByAgent((prev) => ({ ...prev, [kind]: updater(prev[kind]) }));

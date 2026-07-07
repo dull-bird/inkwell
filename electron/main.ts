@@ -6,9 +6,17 @@ app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-gpu');
 app.commandLine.appendSwitch('disable-software-rasterizer');
 
-import { join, dirname } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { existsSync, mkdtempSync, readdirSync, statSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { spawn, ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
@@ -47,6 +55,17 @@ let currentAgentKind: AgentKind = 'claude';
 let currentPdfPath: string | null = null;
 let backendPort = 18765;
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+type PdfSessionExportMode = 'none' | 'reference' | 'copy';
+
+interface NativeAgentSessionExportRequest {
+  suggestedName: string;
+  handoffMarkdown: string;
+  notesMarkdown: string;
+  nextPrompt: string;
+  activePdfPath?: string | null;
+  hasUnsavedPreviewOperations: boolean;
+}
 
 function findAvailablePort(preferred: number): Promise<number> {
   return new Promise((resolve) => {
@@ -149,7 +168,7 @@ function getOrCreateAgentSession(kind: AgentKind): AgentSession {
   return session;
 }
 
-function collectPdfFiles(root: string): string[] {
+function collectWorkspaceFiles(root: string): string[] {
   const found: string[] = [];
   const visit = (dir: string) => {
     for (const entry of readdirSync(dir)) {
@@ -157,13 +176,48 @@ function collectPdfFiles(root: string): string[] {
       const stat = statSync(path);
       if (stat.isDirectory()) {
         visit(path);
-      } else if (stat.isFile() && /\.pdf$/i.test(path)) {
+      } else if (stat.isFile() && /\.(pdf|md|markdown)$/i.test(path)) {
         found.push(path);
       }
     }
   };
   visit(root);
   return Array.from(new Set(found)).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
+function sanitizeExportName(name: string): string {
+  const cleaned = name
+    .replace(/\.[^.]+$/, '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 72);
+  return cleaned || 'session';
+}
+
+function exportTimestamp(date = new Date()): string {
+  return date.toISOString().replace(/[:.]/g, '-');
+}
+
+async function choosePdfExportMode(
+  request: NativeAgentSessionExportRequest,
+): Promise<PdfSessionExportMode | null> {
+  if (!request.activePdfPath) return 'none';
+
+  const detail = request.hasUnsavedPreviewOperations
+    ? 'Sparrow has preview annotations that are not written into the PDF yet. Copying exports the current source PDF; apply annotations first if you need them persisted.'
+    : 'You can reference the current PDF in place or copy it into the export folder.';
+
+  const result = await dialog.showMessageBox(mainWindow!, {
+    type: 'question',
+    buttons: ['Reference Path', 'Copy PDF', 'Cancel'],
+    defaultId: 0,
+    cancelId: 2,
+    message: 'How should Sparrow include the current PDF?',
+    detail,
+  });
+
+  if (result.response === 2) return null;
+  return result.response === 1 ? 'copy' : 'reference';
 }
 
 // IPC handlers
@@ -186,7 +240,7 @@ ipcMain.handle('dialog:openFolder', async () => {
   });
   const folder = result.filePaths[0];
   if (!folder) return [];
-  return collectPdfFiles(folder);
+  return collectWorkspaceFiles(folder);
 });
 
 ipcMain.handle('app:getBackendUrl', () => `http://127.0.0.1:${backendPort}`);
@@ -203,6 +257,38 @@ ipcMain.handle('app:openPath', async (_event, path: string) => {
   if (error) throw new Error(error);
   return path;
 });
+
+ipcMain.handle(
+  'session:exportNativeAgent',
+  async (_event, request: NativeAgentSessionExportRequest) => {
+    const pdfMode = await choosePdfExportMode(request);
+    if (pdfMode === null) throw new Error('Session export cancelled.');
+
+    const root = join(app.getPath('documents'), 'Sparrow Agent Exports');
+    const directory = join(root, `${exportTimestamp()}-${sanitizeExportName(request.suggestedName)}`);
+    mkdirSync(directory, { recursive: true });
+
+    const handoffPath = join(directory, 'handoff.md');
+    const notesPath = join(directory, 'notes.md');
+    const promptPath = join(directory, 'next-prompt.txt');
+
+    writeFileSync(handoffPath, request.handoffMarkdown, 'utf8');
+    writeFileSync(notesPath, request.notesMarkdown.trim() || '# Session Notes\n\n_No notes written yet._\n', 'utf8');
+    writeFileSync(promptPath, request.nextPrompt, 'utf8');
+
+    let pdfPath: string | undefined;
+    if (pdfMode === 'copy' && request.activePdfPath) {
+      if (!existsSync(request.activePdfPath)) throw new Error(`PDF does not exist: ${request.activePdfPath}`);
+      pdfPath = join(directory, basename(request.activePdfPath));
+      copyFileSync(request.activePdfPath, pdfPath);
+    } else if (pdfMode === 'reference' && request.activePdfPath) {
+      pdfPath = request.activePdfPath;
+    }
+
+    shell.showItemInFolder(handoffPath);
+    return { directory, handoffPath, notesPath, promptPath, pdfMode, pdfPath };
+  },
+);
 
 ipcMain.handle('agent:getKind', () => currentAgentKind);
 ipcMain.handle('agent:setKind', (_event, kind: AgentKind) => {

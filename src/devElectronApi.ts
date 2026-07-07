@@ -16,6 +16,13 @@ export function createBrowserPreviewElectronApi(): ElectronAPI {
     getBackendToken: async () => '',
     setCurrentFile: async () => {},
     openPath: async (path) => path,
+    exportNativeAgentSession: async () => ({
+      directory: '/tmp/sparrow-agent-export',
+      handoffPath: '/tmp/sparrow-agent-export/handoff.md',
+      notesPath: '/tmp/sparrow-agent-export/notes.md',
+      promptPath: '/tmp/sparrow-agent-export/next-prompt.txt',
+      pdfMode: 'none',
+    }),
     getAgentKind: async () => agentKind,
     setAgentKind: async (kind) => {
       agentKind = kind;

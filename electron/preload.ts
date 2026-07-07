@@ -3,6 +3,26 @@ import type { AgentEvent, AgentKind, AgentPromptOptions } from './agent.js';
 
 export type { AgentEvent, AgentKind, AgentPromptOptions };
 
+type PdfSessionExportMode = 'none' | 'reference' | 'copy';
+
+interface NativeAgentSessionExportRequest {
+  suggestedName: string;
+  handoffMarkdown: string;
+  notesMarkdown: string;
+  nextPrompt: string;
+  activePdfPath?: string | null;
+  hasUnsavedPreviewOperations: boolean;
+}
+
+interface NativeAgentSessionExportResult {
+  directory: string;
+  handoffPath: string;
+  notesPath: string;
+  promptPath: string;
+  pdfMode: PdfSessionExportMode;
+  pdfPath?: string;
+}
+
 export interface ElectronAPI {
   openPdfFile: () => Promise<string | null>;
   openPdfFolder: () => Promise<string[]>;
@@ -10,6 +30,9 @@ export interface ElectronAPI {
   getBackendToken: () => Promise<string>;
   setCurrentFile: (path: string) => Promise<void>;
   openPath: (path: string) => Promise<string>;
+  exportNativeAgentSession: (
+    request: NativeAgentSessionExportRequest,
+  ) => Promise<NativeAgentSessionExportResult>;
   getAgentKind: () => Promise<AgentKind>;
   setAgentKind: (kind: AgentKind) => Promise<void>;
   sendAgentPrompt: (prompt: string, turnId: string, options?: AgentPromptOptions) => void;
@@ -24,6 +47,7 @@ const api: ElectronAPI = {
   getBackendToken: () => ipcRenderer.invoke('app:getBackendToken'),
   setCurrentFile: (path) => ipcRenderer.invoke('app:setCurrentFile', path),
   openPath: (path) => ipcRenderer.invoke('app:openPath', path),
+  exportNativeAgentSession: (request) => ipcRenderer.invoke('session:exportNativeAgent', request),
   getAgentKind: () => ipcRenderer.invoke('agent:getKind'),
   setAgentKind: (kind) => ipcRenderer.invoke('agent:setKind', kind),
   sendAgentPrompt: (prompt, turnId, options) => ipcRenderer.send('agent:prompt', prompt, turnId, options),

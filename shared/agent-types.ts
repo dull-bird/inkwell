@@ -23,6 +23,26 @@ export interface AgentPromptOptions {
   reasoningLevel?: AgentReasoningLevel;
 }
 
+export type PdfSessionExportMode = 'none' | 'reference' | 'copy';
+
+export interface NativeAgentSessionExportRequest {
+  suggestedName: string;
+  handoffMarkdown: string;
+  notesMarkdown: string;
+  nextPrompt: string;
+  activePdfPath?: string | null;
+  hasUnsavedPreviewOperations: boolean;
+}
+
+export interface NativeAgentSessionExportResult {
+  directory: string;
+  handoffPath: string;
+  notesPath: string;
+  promptPath: string;
+  pdfMode: PdfSessionExportMode;
+  pdfPath?: string;
+}
+
 export const AGENT_INFO: Record<AgentKind, { label: string; color: string }> = {
   claude: { label: 'Claude Code', color: '#D97757' },
   codex: { label: 'Codex', color: '#10A37F' },
@@ -36,6 +56,9 @@ export interface ElectronAPI {
   getBackendToken: () => Promise<string>;
   setCurrentFile: (path: string) => Promise<void>;
   openPath: (path: string) => Promise<string>;
+  exportNativeAgentSession: (
+    request: NativeAgentSessionExportRequest,
+  ) => Promise<NativeAgentSessionExportResult>;
   getAgentKind: () => Promise<AgentKind>;
   setAgentKind: (kind: AgentKind) => Promise<void>;
   sendAgentPrompt: (prompt: string, turnId: string, options?: AgentPromptOptions) => void;

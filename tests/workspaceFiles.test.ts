@@ -1,21 +1,50 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizePdfPaths } from '../src/workspaceFiles';
+import {
+  buildWorkspaceTree,
+  detectWorkspaceFileKind,
+  normalizeWorkspacePaths,
+} from '../src/workspaceFiles';
 
-test('normalizes folder file results into sorted unique PDF paths', () => {
+test('detects PDF and Markdown workspace file kinds', () => {
+  assert.equal(detectWorkspaceFileKind('/work/paper.PDF'), 'pdf');
+  assert.equal(detectWorkspaceFileKind('/work/notes/session.markdown'), 'markdown');
+  assert.equal(detectWorkspaceFileKind('/work/notes/todo.md'), 'markdown');
+  assert.equal(detectWorkspaceFileKind('/work/assets/logo.png'), 'other');
+});
+
+test('normalizes supported workspace paths in deterministic order', () => {
   assert.deepEqual(
-    normalizePdfPaths([
-      '/docs/zeta.PDF',
-      '/docs/readme.md',
-      '/docs/alpha.pdf',
-      '/docs/nested/Beta.Pdf',
-      '/docs/alpha.pdf',
-      '/docs/image.png',
+    normalizeWorkspacePaths([
+      '/work/Zeta.pdf',
+      '/work/notes.md',
+      '/work/Zeta.pdf',
+      '/work/archive.zip',
+      '/work/alpha.PDF',
     ]),
-    ['/docs/alpha.pdf', '/docs/nested/Beta.Pdf', '/docs/zeta.PDF'],
+    ['/work/alpha.PDF', '/work/notes.md', '/work/Zeta.pdf'],
   );
 });
 
-test('returns an empty array when no PDFs are present', () => {
-  assert.deepEqual(normalizePdfPaths(['/docs/readme.md', '/docs/image.png']), []);
+test('builds a VS Code style tree from PDF and Markdown paths', () => {
+  const tree = buildWorkspaceTree([
+    '/Users/lilei/docs/book/chapter-1.pdf',
+    '/Users/lilei/docs/book/notes/session.md',
+    '/Users/lilei/docs/book/appendix.pdf',
+  ]);
+
+  assert.equal(tree.rootName, 'book');
+  assert.equal(tree.rootPath, '/Users/lilei/docs/book');
+  assert.deepEqual(
+    tree.children.map((node) => ({ name: node.name, kind: node.kind })),
+    [
+      { name: 'notes', kind: 'folder' },
+      { name: 'appendix.pdf', kind: 'pdf' },
+      { name: 'chapter-1.pdf', kind: 'pdf' },
+    ],
+  );
+
+  const notes = tree.children[0];
+  assert.equal(notes.children?.[0].name, 'session.md');
+  assert.equal(notes.children?.[0].kind, 'markdown');
 });
