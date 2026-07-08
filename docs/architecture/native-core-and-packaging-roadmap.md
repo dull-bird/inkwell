@@ -76,16 +76,25 @@ Electron Builder is configured with first-pass targets:
 - Windows: `nsis`
 - Linux: `AppImage`, `deb`
 
-Electron Builder now copies the Python backend source into app resources, and
-Electron resolves packaged backend paths through `process.resourcesPath`. This is
-still not a final distributable app because the Python runtime and Python
-dependencies are not bundled yet, and PDF4QT is not linked into the native host.
+Runtime bundling now has two layers:
+
+- `backend/dist/<platform>-<arch>/inkwell-backend` for a PyInstaller backend executable.
+- `native/dist/<platform>-<arch>/inkwell-pdf4qt-host` for the native PDF host.
+
+Electron prefers the bundled backend executable when present, falls back to the
+packaged Python backend source through `process.resourcesPath`, and still allows
+`INKWELL_BACKEND_EXECUTABLE` or `INKWELL_PYTHON` overrides for diagnostics.
+Use `npm run bundle:runtimes` before `npm run package:mac:full`,
+`package:win:full`, or `package:linux:full` when producing release candidates.
+
+This is still not a final distributable app because PDF4QT is not linked into the
+native host yet, and the backend executable still depends on PyInstaller bundle
+quality on each platform.
+
 Production packaging still needs:
 
-1. Bundle a Python runtime and backend dependencies, or replace the Python
-   backend with native PDF4QT commands.
-2. Link the real PDF4QT adapter into `inkwell-pdf4qt-host`.
-3. Bundle staged native host binaries under Electron resources.
-4. Sign and notarize macOS builds.
-5. Sign Windows installers.
-6. Add CI matrix builds for macOS, Windows, and Linux.
+1. Link the real PDF4QT adapter into `inkwell-pdf4qt-host`.
+2. Verify PyInstaller backend bundles on macOS, Windows, and Linux.
+3. Sign and notarize macOS builds.
+4. Sign Windows installers.
+5. Add CI matrix builds for macOS, Windows, and Linux.

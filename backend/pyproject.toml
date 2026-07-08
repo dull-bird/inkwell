@@ -12,6 +12,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
+bundle = ["pyinstaller>=6.0"]
 
 [build-system]
 requires = ["hatchling"]

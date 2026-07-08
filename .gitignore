@@ -11,5 +11,9 @@ native/dist/*
 backend/.venv/
 backend/**/__pycache__/
 backend/*.egg-info/
+backend/build/
+backend/dist/*
+!backend/dist/
+!backend/dist/.gitkeep
 *.pyc
 .DS_Store

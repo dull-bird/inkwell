@@ -17,10 +17,15 @@
     "package:win": "npm run build && electron-builder --win",
     "package:linux": "npm run build && electron-builder --linux",
     "package:all": "npm run build && electron-builder -mwl",
+    "package:mac:full": "npm run bundle:runtimes && npm run package:mac",
+    "package:win:full": "npm run bundle:runtimes && npm run package:win",
+    "package:linux:full": "npm run bundle:runtimes && npm run package:linux",
+    "bundle:runtimes": "npm run native:package && npm run backend:bundle",
     "native:configure": "cmake -S native/pdf4qt-host -B native/build/pdf4qt-host",
     "native:build": "cmake --build native/build/pdf4qt-host --config Release",
     "native:stage": "node scripts/stage-native-host.mjs",
     "native:package": "npm run native:configure && npm run native:build && npm run native:stage",
+    "backend:bundle": "node scripts/bundle-backend.mjs",
     "backend:install": "cd backend && /usr/bin/python3 -m pip install -e .",
     "backend:dev": "cd backend && /usr/bin/python3 -m inkwell.server"
   },
@@ -54,6 +59,13 @@
           "!**/*.pyc",
           "!**/*.egg-info/**",
           "!.venv/**"
+        ]
+      },
+      {
+        "from": "backend/dist",
+        "to": "backend-bin",
+        "filter": [
+          "**/*"
         ]
       }
     ],

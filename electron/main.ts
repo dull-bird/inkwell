@@ -207,7 +207,7 @@ async function startBackend() {
     env: process.env,
   });
 
-  backendProcess = spawn(backendConfig.pythonExecutable, ['-m', backendConfig.moduleName], {
+  backendProcess = spawn(backendConfig.command, backendConfig.args, {
     cwd: backendConfig.cwd,
     env: {
       ...process.env,

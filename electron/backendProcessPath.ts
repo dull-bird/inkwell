@@ -1,5 +1,6 @@
-import { join } from 'node:path';
+import { dirname as pathDirname, join } from 'node:path';
 
+export const INKWELL_BACKEND_EXECUTABLE_ENV = 'INKWELL_BACKEND_EXECUTABLE';
 export const INKWELL_PYTHON_ENV = 'INKWELL_PYTHON';
 
 export interface BackendProcessConfigInput {
@@ -7,9 +8,15 @@ export interface BackendProcessConfigInput {
   dirname: string;
   resourcesPath: string;
   env: NodeJS.ProcessEnv;
+  platform?: string;
+  arch?: string;
+  exists?: (path: string) => boolean;
 }
 
 export interface BackendProcessConfig {
+  kind: 'executable' | 'python-module';
+  command: string;
+  args: string[];
   cwd: string;
   pythonExecutable: string;
   moduleName: 'inkwell.server';
@@ -19,15 +26,51 @@ export function resolveBackendResourcePath(resourcesPath: string): string {
   return join(resourcesPath, 'backend');
 }
 
+export function getBundledBackendExecutablePath(resourcesPath: string, platform: string, arch: string): string {
+  const executable = platform === 'win32' ? 'inkwell-backend.exe' : 'inkwell-backend';
+  return join(resourcesPath, 'backend-bin', `${platform}-${arch}`, executable);
+}
+
 export function resolveBackendProcessConfig({
   isPackaged,
   dirname,
   resourcesPath,
   env,
+  platform = process.platform,
+  arch = process.arch,
+  exists = () => false,
 }: BackendProcessConfigInput): BackendProcessConfig {
+  const explicitExecutable = env[INKWELL_BACKEND_EXECUTABLE_ENV]?.trim();
+  if (explicitExecutable && exists(explicitExecutable)) {
+    return {
+      kind: 'executable',
+      command: explicitExecutable,
+      args: [],
+      cwd: pathDirname(explicitExecutable),
+      pythonExecutable: env[INKWELL_PYTHON_ENV]?.trim() || '/usr/bin/python3',
+      moduleName: 'inkwell.server',
+    };
+  }
+
+  const bundledExecutable = getBundledBackendExecutablePath(resourcesPath, platform, arch);
+  if (isPackaged && exists(bundledExecutable)) {
+    return {
+      kind: 'executable',
+      command: bundledExecutable,
+      args: [],
+      cwd: join(resourcesPath, 'backend-bin', `${platform}-${arch}`),
+      pythonExecutable: env[INKWELL_PYTHON_ENV]?.trim() || '/usr/bin/python3',
+      moduleName: 'inkwell.server',
+    };
+  }
+
+  const pythonExecutable = env[INKWELL_PYTHON_ENV]?.trim() || '/usr/bin/python3';
   return {
+    kind: 'python-module',
+    command: pythonExecutable,
+    args: ['-m', 'inkwell.server'],
     cwd: isPackaged ? resolveBackendResourcePath(resourcesPath) : join(dirname, '../backend'),
-    pythonExecutable: env[INKWELL_PYTHON_ENV]?.trim() || '/usr/bin/python3',
+    pythonExecutable,
     moduleName: 'inkwell.server',
   };
 }

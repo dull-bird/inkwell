@@ -10,6 +10,11 @@ test('defines cross-platform app packaging scripts', () => {
   assert.equal(packageJson.scripts['package:win'], 'npm run build && electron-builder --win');
   assert.equal(packageJson.scripts['package:linux'], 'npm run build && electron-builder --linux');
   assert.equal(packageJson.scripts['package:all'], 'npm run build && electron-builder -mwl');
+  assert.equal(packageJson.scripts['package:mac:full'], 'npm run bundle:runtimes && npm run package:mac');
+  assert.equal(packageJson.scripts['package:win:full'], 'npm run bundle:runtimes && npm run package:win');
+  assert.equal(packageJson.scripts['package:linux:full'], 'npm run bundle:runtimes && npm run package:linux');
+  assert.equal(packageJson.scripts['bundle:runtimes'], 'npm run native:package && npm run backend:bundle');
+  assert.equal(packageJson.scripts['backend:bundle'], 'node scripts/bundle-backend.mjs');
 });
 
 test('configures Electron Builder platform targets', () => {
@@ -40,6 +45,11 @@ test('packages runtime resources when present', () => {
       from: 'backend',
       to: 'backend',
       filter: ['inkwell/**', 'pyproject.toml', '!**/__pycache__/**', '!**/*.pyc', '!**/*.egg-info/**', '!.venv/**'],
+    },
+    {
+      from: 'backend/dist',
+      to: 'backend-bin',
+      filter: ['**/*'],
     },
   ]);
 });
