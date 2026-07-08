@@ -1,10 +1,10 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 
-// Disable GPU before the app is ready to avoid GPU process crashes on Linux
-// with certain drivers/remote-desktop setups.
+// Disable hardware GPU before the app is ready to avoid driver-specific
+// crashes on Linux/remote-desktop setups. Keep Chromium's software rasterizer
+// enabled so Electron still has a compositor fallback.
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-gpu');
-app.commandLine.appendSwitch('disable-software-rasterizer');
 
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -79,10 +79,10 @@ async function getNativePdfCoreStatus() {
       if (nativePdfHostHasLinkedAdapter(status)) {
         return {
           mode: 'pdf4qt-ready',
-          renderer: 'PDF4QT',
-          writeEngine: 'PDF4QT command bridge',
+          renderer: 'pdf.js',
+          writeEngine: 'PyMuPDF',
           pdf4qt: { available: true, envVar: PDF4QT_HOST_ENV, hostPath: host.hostPath },
-          message: host.message,
+          message: 'PDF4QT native command bridge ready for supported commands.',
         };
       }
       return {
@@ -395,6 +395,10 @@ ipcMain.handle(
 ipcMain.handle('agent:getKind', () => currentAgentKind);
 ipcMain.handle('agent:setKind', (_event, kind: AgentKind) => {
   currentAgentKind = kind;
+});
+ipcMain.handle('agent:getCatalog', async (_event, kind: AgentKind) => {
+  const session = getOrCreateAgentSession(kind);
+  return session.getCatalog();
 });
 
 ipcMain.on('agent:prompt', async (event, prompt: string, turnId: string, options?: AgentPromptOptions) => {

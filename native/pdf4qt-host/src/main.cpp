@@ -9,6 +9,8 @@
 #include <iostream>
 #include <string>
 
+#include "pdf4qt_adapter.h"
+
 namespace {
 
 const QStringList kKnownMethods = {
@@ -19,7 +21,32 @@ const QStringList kKnownMethods = {
     "preview_highlights",
     "read_form_fields",
     "fill_form",
+    "free_text_annotation",
+    "stamp_annotation",
+    "shape_annotation",
+    "insert_image",
+    "underline_text",
+    "strikeout_text",
+    "redact_text",
     "typed_signature",
+    "image_signature",
+    "extract_pages",
+    "insert_blank_pages",
+    "export_pages_as_images",
+    "extract_images",
+    "export_text",
+    "images_to_pdf",
+    "html_to_pdf",
+    "markdown_to_pdf",
+    "crop_pages",
+    "resize_pages",
+    "read_outline",
+    "set_outline",
+    "list_attachments",
+    "add_attachment",
+    "extract_attachments",
+    "remove_attachments",
+    "compress_pdf",
     "apply_operations",
     "undo",
     "redo",
@@ -51,7 +78,7 @@ QJsonObject makeResult(const QJsonValue& id, const QJsonObject& result) {
     return response;
 }
 
-QJsonObject handleRequest(const QJsonObject& request) {
+QJsonObject handleRequest(Pdf4qtAdapter& adapter, const QJsonObject& request) {
     const QJsonValue id = requestIdOrNull(request);
     if (request.value("jsonrpc").toString() != "2.0") {
         return makeError(id, -32600, "Expected JSON-RPC 2.0 request.");
@@ -62,19 +89,24 @@ QJsonObject handleRequest(const QJsonObject& request) {
         return makeError(id, -32601, QString("Unknown native PDF method: %1").arg(method));
     }
 
-    if (method == "host_status") {
-        QJsonObject result;
-        result.insert("host", "inkwell-pdf4qt-host");
-        result.insert("protocol_version", 1);
-        result.insert("pdf4qt_adapter", false);
-        result.insert("message", "PDF4QT adapter not linked in this scaffold build.");
-        return makeResult(id, result);
+    const QJsonValue paramsValue = request.value("params");
+    QJsonObject params;
+    if (!paramsValue.isUndefined() && !paramsValue.isNull()) {
+        if (!paramsValue.isObject()) {
+            return makeError(id, -32602, "Native PDF command params must be an object.");
+        }
+        params = paramsValue.toObject();
     }
 
-    return makeError(id, -32000, "PDF4QT adapter not linked in this scaffold build.");
+    const Pdf4qtAdapterResponse adapterResponse = adapter.handle(method, params);
+    if (!adapterResponse.ok) {
+        return makeError(id, adapterResponse.errorCode, adapterResponse.errorMessage);
+    }
+    return makeResult(id, adapterResponse.result);
 }
 
 int runStdioJson() {
+    Pdf4qtAdapter adapter;
     std::string line;
     while (std::getline(std::cin, line)) {
         if (line.empty()) {
@@ -87,7 +119,7 @@ int runStdioJson() {
         if (parseError.error != QJsonParseError::NoError || !requestDocument.isObject()) {
             response = makeError(QJsonValue(QJsonValue::Null), -32700, parseError.errorString());
         } else {
-            response = handleRequest(requestDocument.object());
+            response = handleRequest(adapter, requestDocument.object());
         }
 
         const QJsonDocument responseDocument(response);

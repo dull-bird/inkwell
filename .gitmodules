@@ -1,0 +1,3 @@
+[submodule "native/vendor/pdf4qt"]
+	path = native/vendor/pdf4qt
+	url = https://github.com/JakubMelka/PDF4QT.git

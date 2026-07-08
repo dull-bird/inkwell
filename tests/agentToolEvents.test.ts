@@ -37,6 +37,23 @@ test('extracts Inkwell tool results when the SDK reports the wrapper name at top
   });
 });
 
+test('extracts Inkwell tool results when the SDK reports the plain tool name', () => {
+  const result = { operations: [] };
+  const part = {
+    type: 'tool-result',
+    toolCallId: 'call-plain',
+    toolName: 'find_pdf_text',
+    result,
+  };
+
+  assert.deepEqual(extractInkwellToolEvent(part), {
+    toolCallId: 'call-plain',
+    toolName: 'find_pdf_text',
+    args: undefined,
+    output: result,
+  });
+});
+
 test('ignores non-Inkwell agent tool events', () => {
   assert.equal(extractInkwellToolEvent({ toolCallId: 'call-3', toolName: 'Bash' }), null);
 });

@@ -4,12 +4,15 @@
   width: 100%;
   height: 100%;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   border-left: 1px solid var(--border);
   background: var(--surface);
 }
 
 .agent-header {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -60,6 +63,7 @@
 
 .agent-controls {
   display: grid;
+  flex: 0 0 auto;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   padding: 10px 12px;
@@ -95,7 +99,15 @@
   padding: 0 8px;
 }
 
+.agent-catalog-hint {
+  grid-column: 1 / -1;
+  color: var(--muted-2);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .assistant-card {
+  flex: 0 0 auto;
   margin: 12px 12px 0;
   padding: 12px;
   border: 1px solid var(--border);
@@ -114,6 +126,16 @@
   margin-top: 8px;
   color: var(--muted);
   font-size: 12.5px;
+}
+
+.privacy-card .permission-options.compact {
+  margin-top: 10px;
+}
+
+.privacy-card .permission-options.compact button {
+  min-width: 0;
+  padding: 0 8px;
+  font-size: 12px;
 }
 
 .analysis-kind {
@@ -167,16 +189,19 @@
   position: relative;
   display: flex;
   flex: 1;
-  min-height: 140px;
+  min-height: 0;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .chat-scroll {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   margin-top: 12px;
   padding: 0 12px 12px;
   overflow-y: auto;
+  overflow-x: hidden;
   overscroll-behavior: contain;
 }
 
@@ -397,6 +422,7 @@
 
 .chat-composer {
   display: grid;
+  flex: 0 0 auto;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   padding: 10px 12px 12px;

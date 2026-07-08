@@ -25,6 +25,19 @@ test('resolves development backend path next to repository backend directory', (
   assert.equal(config.moduleName, 'inkwell.server');
 });
 
+test('resolves development backend path from isolated Vite dev electron output', () => {
+  const config = resolveBackendProcessConfig({
+    isPackaged: false,
+    dirname: '/work/inkwell/.tmp/dev-electron',
+    resourcesPath: '/Applications/Sparrow.app/Contents/Resources',
+    env: {},
+    exists: (path) => path === join('/work/inkwell/backend', 'pyproject.toml'),
+  });
+
+  assert.equal(config.cwd, join('/work/inkwell/backend'));
+  assert.equal(config.kind, 'python-module');
+});
+
 test('resolves packaged backend path from Electron resources', () => {
   const resourcesPath = '/Applications/Sparrow.app/Contents/Resources';
   assert.equal(resolveBackendResourcePath(resourcesPath), join(resourcesPath, 'backend'));

@@ -1,4 +1,5 @@
 node_modules/
+.tmp/
 dist/
 dist-electron/
 release/
@@ -16,4 +17,5 @@ backend/dist/*
 !backend/dist/
 !backend/dist/.gitkeep
 *.pyc
+*.tsbuildinfo
 .DS_Store

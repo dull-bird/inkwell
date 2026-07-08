@@ -18,7 +18,25 @@ export type AgentEvent =
   | { type: 'error'; message: string };
 
 export type AgentKind = 'claude' | 'codex' | 'kimi';
-export type AgentReasoningLevel = 'auto' | 'low' | 'medium' | 'high';
+export type AgentReasoningLevel = 'auto' | 'none' | 'low' | 'medium' | 'high' | 'xhigh';
+
+export interface AgentModelOption {
+  id: string;
+  name: string;
+}
+
+export interface AgentModeOption {
+  id: string;
+  name: string;
+}
+
+export interface AgentCatalog {
+  models: AgentModelOption[];
+  modes: AgentModeOption[];
+  currentModelId?: string;
+  currentModeId?: string;
+  unavailableReason?: string;
+}
 
 export interface AgentPromptOptions {
   modelId?: string;
@@ -66,6 +84,7 @@ export interface ElectronAPI {
   ) => Promise<NativeAgentSessionExportResult>;
   getAgentKind: () => Promise<AgentKind>;
   setAgentKind: (kind: AgentKind) => Promise<void>;
+  getAgentCatalog: (kind: AgentKind) => Promise<AgentCatalog>;
   sendAgentPrompt: (prompt: string, turnId: string, options?: AgentPromptOptions) => void;
   stopAgentPrompt: (turnId: string) => void;
   onAgentEvent: (callback: (event: AgentEvent & { turnId?: string }) => void) => () => void;

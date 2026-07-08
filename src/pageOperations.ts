@@ -1,18 +1,18 @@
 export type PageRange = [number, number];
 
 export function buildRemainingPageOrder(pageCount: number, deleteRanges: PageRange[]): number[] {
-  const deleted = expandRanges(pageCount, deleteRanges);
+  const deleted = new Set(expandPageRanges(pageCount, deleteRanges));
   const remaining = Array.from({ length: pageCount }, (_, index) => index).filter((index) => !deleted.has(index));
   if (remaining.length === 0) throw new Error('Cannot delete every page.');
   return remaining;
 }
 
 export function buildRotationMap(pageCount: number, pageRanges: PageRange[], degrees: number): Record<number, number> {
-  const selected = expandRanges(pageCount, pageRanges);
-  return Object.fromEntries(Array.from(selected).map((index) => [index, normalizeDegrees(degrees)]));
+  const selected = expandPageRanges(pageCount, pageRanges);
+  return Object.fromEntries(selected.map((index) => [index, normalizeDegrees(degrees)]));
 }
 
-function expandRanges(pageCount: number, pageRanges: PageRange[]): Set<number> {
+export function expandPageRanges(pageCount: number, pageRanges: PageRange[]): number[] {
   const selected = new Set<number>();
   for (const [start, end] of pageRanges) {
     if (start < 1 || end < start || end > pageCount) {
@@ -22,7 +22,7 @@ function expandRanges(pageCount: number, pageRanges: PageRange[]): Set<number> {
       selected.add(page - 1);
     }
   }
-  return selected;
+  return Array.from(selected);
 }
 
 function normalizeDegrees(degrees: number): number {

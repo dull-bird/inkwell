@@ -16,9 +16,9 @@ export interface ComposerControlState {
 export function getComposerControlState(input: ComposerControlInput): ComposerControlState {
   return {
     textareaDisabled: !input.canChat,
-    sendVisible: true,
+    sendVisible: !input.busy,
     sendDisabled: !input.canChat || input.busy || !input.input.trim(),
-    stopVisible: true,
+    stopVisible: input.busy,
     stopDisabled: !input.busy || !input.activeTurnId,
   };
 }

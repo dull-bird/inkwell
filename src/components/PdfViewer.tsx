@@ -1,7 +1,10 @@
 import { useMemo, useState, type MouseEvent } from 'react';
+import { Search, X } from 'lucide-react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { clientPointToPdfPoint } from '../pdfCoordinates';
+import { countHighlightRects } from '../pdfHighlights';
+import { isPdfPlacementActive, type PdfPlacementMode } from '../pdfPlacementMode';
 import 'react-pdf/dist/Page/TextLayer.css';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 
@@ -33,15 +36,37 @@ interface PdfViewerProps {
   url: string;
   token: string;
   highlights: HighlightOperation[];
+  searchHighlights?: HighlightOperation[];
+  searchQuery?: string;
+  searchBusy?: boolean;
   commentTarget?: CommentTarget | null;
+  targetMode?: PdfPlacementMode;
+  onSearchQueryChange?: (query: string) => void;
+  onSearchSubmit?: () => void;
+  onSearchClear?: () => void;
   onCommentTargetChange?: (target: CommentTarget) => void;
 }
 
-export default function PdfViewer({ url, token, highlights, commentTarget, onCommentTargetChange }: PdfViewerProps) {
+export default function PdfViewer({
+  url,
+  token,
+  highlights,
+  searchHighlights = [],
+  searchQuery = '',
+  searchBusy = false,
+  commentTarget,
+  targetMode = 'none',
+  onSearchQueryChange,
+  onSearchSubmit,
+  onSearchClear,
+  onCommentTargetChange,
+}: PdfViewerProps) {
   const [scale, setScale] = useState(1);
   const [numPages, setNumPages] = useState(0);
   const file = useMemo(() => ({ url }), [url]);
   const options = useMemo(() => ({ httpHeaders: { 'X-Inkwell-Token': token } }), [token]);
+  const searchMatchCount = countHighlightRects(searchHighlights);
+  const pickingTarget = isPdfPlacementActive(targetMode);
 
   return (
     <div className="pdf-viewer">
@@ -49,8 +74,49 @@ export default function PdfViewer({ url, token, highlights, commentTarget, onCom
         <button onClick={() => setScale((s) => Math.max(0.5, +(s - 0.1).toFixed(2)))}>-</button>
         <span>{Math.round(scale * 100)}%</span>
         <button onClick={() => setScale((s) => Math.min(3, +(s + 0.1).toFixed(2)))}>+</button>
+        <label className="pdf-search-field">
+          <Search size={14} />
+          <input
+            value={searchQuery}
+            disabled={!onSearchSubmit || searchBusy}
+            onChange={(event) => onSearchQueryChange?.(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                onSearchSubmit?.();
+              }
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                onSearchClear?.();
+              }
+            }}
+            placeholder="Find in PDF"
+          />
+        </label>
+        <button
+          onClick={onSearchSubmit}
+          disabled={!onSearchSubmit || searchBusy || !searchQuery.trim()}
+          title="Find in PDF"
+          aria-label="Find in PDF"
+        >
+          <Search size={14} />
+        </button>
+        <button
+          onClick={onSearchClear}
+          disabled={!onSearchClear || searchBusy || (!searchQuery && searchMatchCount === 0)}
+          title="Clear search"
+          aria-label="Clear search"
+        >
+          <X size={14} />
+        </button>
         <span className="pdf-toolbar-status">
-          {highlights.length > 0 ? `${highlights.length} preview highlights` : 'Ready'}
+          {searchBusy
+            ? 'Searching...'
+            : searchMatchCount > 0
+              ? `${searchMatchCount} matches`
+              : highlights.length > 0
+                ? `${highlights.length} preview highlights`
+                : 'Ready'}
         </span>
       </div>
       <div className="pdf-scroll">
@@ -58,14 +124,17 @@ export default function PdfViewer({ url, token, highlights, commentTarget, onCom
           {Array.from({ length: numPages }, (_, index) => {
             const pageNumber = index + 1;
             const pageHighlights = highlights.filter((highlight) => highlight.page === index);
-            const pageCommentTarget = commentTarget?.page === index ? commentTarget : null;
+            const pageSearchHighlights = searchHighlights.filter((highlight) => highlight.page === index);
+            const pageCommentTarget = pickingTarget && commentTarget?.page === index ? commentTarget : null;
             const handleClick = (event: MouseEvent<HTMLDivElement>) => {
+              if (!pickingTarget) return;
               const point = clientPointToPdfPoint(event, event.currentTarget.getBoundingClientRect(), scale);
               onCommentTargetChange?.({ page: index, x: point.x, y: point.y });
             };
             return (
-              <div className="pdf-page-wrap" key={pageNumber} onClick={handleClick}>
+              <div className={`pdf-page-wrap ${pickingTarget ? 'picking-target' : ''}`} key={pageNumber} onClick={handleClick}>
                 <Page pageNumber={pageNumber} scale={scale} renderAnnotationLayer renderTextLayer />
+                <HighlightOverlay highlights={pageSearchHighlights} scale={scale} variant="search" />
                 <HighlightOverlay highlights={pageHighlights} scale={scale} />
                 {pageCommentTarget && <CommentTargetOverlay target={pageCommentTarget} scale={scale} />}
               </div>
@@ -92,7 +161,15 @@ function CommentTargetOverlay({ target, scale }: { target: CommentTarget; scale:
   );
 }
 
-function HighlightOverlay({ highlights, scale }: { highlights: HighlightOperation[]; scale: number }) {
+function HighlightOverlay({
+  highlights,
+  scale,
+  variant = 'preview',
+}: {
+  highlights: HighlightOperation[];
+  scale: number;
+  variant?: 'preview' | 'search';
+}) {
   return (
     <div className="highlight-overlay">
       {highlights.flatMap((highlight) =>
@@ -102,7 +179,7 @@ function HighlightOverlay({ highlights, scale }: { highlights: HighlightOperatio
             <div
               key={`${highlight.id}-${index}`}
               title={highlight.text}
-              className="preview-highlight"
+              className={variant === 'search' ? 'search-highlight' : 'preview-highlight'}
               style={{
                 left: rect.x0 * scale,
                 top: rect.y0 * scale,

@@ -8,10 +8,10 @@
     "strict": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
-    "outDir": "../dist-electron",
-    "rootDir": ".",
+    "noEmit": true,
+    "rootDir": "..",
     "composite": true,
     "declaration": true
   },
-  "include": ["**/*.ts"]
+  "include": ["**/*.ts", "../shared/*.ts"]
 }

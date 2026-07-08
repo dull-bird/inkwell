@@ -1,4 +1,5 @@
 import { dirname as pathDirname, join } from 'node:path';
+import { existsSync } from 'node:fs';
 
 export const INKWELL_BACKEND_EXECUTABLE_ENV = 'INKWELL_BACKEND_EXECUTABLE';
 export const INKWELL_PYTHON_ENV = 'INKWELL_PYTHON';
@@ -31,6 +32,11 @@ export function getBundledBackendExecutablePath(resourcesPath: string, platform:
   return join(resourcesPath, 'backend-bin', `${platform}-${arch}`, executable);
 }
 
+function resolveDevelopmentBackendPath(dirname: string, exists: (path: string) => boolean): string {
+  const candidates = [join(dirname, '../backend'), join(dirname, '../../backend')];
+  return candidates.find((candidate) => exists(join(candidate, 'pyproject.toml'))) ?? candidates[0];
+}
+
 export function resolveBackendProcessConfig({
   isPackaged,
   dirname,
@@ -38,7 +44,7 @@ export function resolveBackendProcessConfig({
   env,
   platform = process.platform,
   arch = process.arch,
-  exists = () => false,
+  exists = existsSync,
 }: BackendProcessConfigInput): BackendProcessConfig {
   const explicitExecutable = env[INKWELL_BACKEND_EXECUTABLE_ENV]?.trim();
   if (explicitExecutable && exists(explicitExecutable)) {
@@ -69,7 +75,7 @@ export function resolveBackendProcessConfig({
     kind: 'python-module',
     command: pythonExecutable,
     args: ['-m', 'inkwell.server'],
-    cwd: isPackaged ? resolveBackendResourcePath(resourcesPath) : join(dirname, '../backend'),
+    cwd: isPackaged ? resolveBackendResourcePath(resourcesPath) : resolveDevelopmentBackendPath(dirname, exists),
     pythonExecutable,
     moduleName: 'inkwell.server',
   };

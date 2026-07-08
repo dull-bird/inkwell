@@ -1,34 +1,10 @@
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { NATIVE_PDF_COMMANDS, type NativePdfCommandName } from '../shared/native-pdf-commands';
 
-export type NativePdfCommandName =
-  | 'open_document'
-  | 'host_status'
-  | 'document_info'
-  | 'find_text'
-  | 'preview_highlights'
-  | 'read_form_fields'
-  | 'fill_form'
-  | 'typed_signature'
-  | 'apply_operations'
-  | 'undo'
-  | 'redo'
-  | 'save_as';
+export type { NativePdfCommandName };
 
-export const ELECTRON_NATIVE_PDF_COMMANDS: NativePdfCommandName[] = [
-  'open_document',
-  'host_status',
-  'document_info',
-  'find_text',
-  'preview_highlights',
-  'read_form_fields',
-  'fill_form',
-  'typed_signature',
-  'apply_operations',
-  'undo',
-  'redo',
-  'save_as',
-];
+export const ELECTRON_NATIVE_PDF_COMMANDS: NativePdfCommandName[] = NATIVE_PDF_COMMANDS.map((command) => command.name);
 
 const KNOWN_NATIVE_PDF_COMMANDS = new Set<NativePdfCommandName>(ELECTRON_NATIVE_PDF_COMMANDS);
 

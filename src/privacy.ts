@@ -11,5 +11,5 @@ export function isAiAllowed(mode: AiPermissionMode, documentAiEnabled: boolean):
 }
 
 export function canAutomaticallyAnalyze(_mode: AiPermissionMode): boolean {
-  return false;
+  return true;
 }

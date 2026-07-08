@@ -20,10 +20,35 @@ The repository includes a small `native/pdf4qt-host` Qt/C++ scaffold for an
 - `host_status`
 - `document_info`
 - `find_text`
+- `preview_highlights`
 - `read_form_fields`
 - `fill_form`
+- `free_text_annotation`
+- `stamp_annotation`
+- `shape_annotation`
+- `insert_image`
+- `underline_text`
+- `strikeout_text`
+- `redact_text`
 - `typed_signature`
-- `preview_highlights`
+- `image_signature`
+- `extract_pages`
+- `insert_blank_pages`
+- `export_pages_as_images`
+- `extract_images`
+- `export_text`
+- `images_to_pdf`
+- `html_to_pdf`
+- `markdown_to_pdf`
+- `crop_pages`
+- `resize_pages`
+- `read_outline`
+- `set_outline`
+- `list_attachments`
+- `add_attachment`
+- `extract_attachments`
+- `remove_attachments`
+- `compress_pdf`
 - `apply_operations`
 - `undo`
 - `redo`
@@ -61,9 +86,11 @@ npm run native:build
 npm run native:stage
 ```
 
-This builds a Qt Core stdio JSON host and stages it under
-`native/dist/<platform>-<arch>/`. The scaffold intentionally returns a JSON-RPC
-error for PDF commands until the real PDF4QT adapter is linked.
+This builds a Qt stdio JSON host and stages it under
+`native/dist/<platform>-<arch>/`. The linked PDF4QT slice currently implements
+`host_status`, `open_document`, `document_info`, `find_text`,
+`preview_highlights`, and `export_text`; remaining edit commands still return a
+JSON-RPC not-implemented error until their PDF4QT operations are wired.
 
 Manual tools and agent tools should both call the bridge so the undo stack,
 annotation model, and saved output behavior stay identical.
@@ -87,13 +114,14 @@ packaged Python backend source through `process.resourcesPath`, and still allows
 Use `npm run bundle:runtimes` before `npm run package:mac:full`,
 `package:win:full`, or `package:linux:full` when producing release candidates.
 
-This is still not a final distributable app because PDF4QT is not linked into the
-native host yet, and the backend executable still depends on PyInstaller bundle
-quality on each platform.
+This is still not a final distributable app because only the first PDF4QT command
+slice is linked into the native host, and the backend executable still depends on
+PyInstaller bundle quality on each platform.
 
 Production packaging still needs:
 
-1. Link the real PDF4QT adapter into `inkwell-pdf4qt-host`.
+1. Implement the remaining PDF4QT mutating commands and route app tools through
+   the native command bridge.
 2. Verify PyInstaller backend bundles on macOS, Windows, and Linux.
 3. Sign and notarize macOS builds.
 4. Sign Windows installers.

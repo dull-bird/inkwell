@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildRemainingPageOrder, buildRotationMap } from '../src/pageOperations';
+import { buildRemainingPageOrder, buildRotationMap, expandPageRanges } from '../src/pageOperations';
 
 test('builds remaining page order after deleting 1-based ranges', () => {
   assert.deepEqual(buildRemainingPageOrder(6, [[2, 3], [5, 5]]), [0, 3, 5]);
@@ -16,6 +16,10 @@ test('builds absolute rotation map for selected 1-based ranges', () => {
     1: 90,
     4: 90,
   });
+});
+
+test('expands 1-based page ranges into unique 0-based indices', () => {
+  assert.deepEqual(expandPageRanges(5, [[1, 2], [2, 4]]), [0, 1, 2, 3]);
 });
 
 test('rejects invalid page ranges', () => {

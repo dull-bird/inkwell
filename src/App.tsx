@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Bot,
   ChevronRight,
+  Crop,
   File,
   FileText,
   FolderOpen,
   Highlighter,
+  Image as ImageIcon,
   LayoutPanelLeft,
   Lock,
   MessageSquare,
@@ -13,14 +15,18 @@ import {
   PanelRight,
   Puzzle,
   PackageOpen,
+  PenLine,
   RotateCw,
   Scissors,
   Search,
   Shield,
   Sparkles,
   Stamp,
+  Square,
+  Strikethrough,
   Sun,
   Trash2,
+  Underline,
   Wand2,
 } from 'lucide-react';
 import PdfViewer, { type CommentTarget, type HighlightOperation } from './components/PdfViewer';
@@ -31,17 +37,50 @@ import { buildAiBrushPrompt, validateAiBrushRun } from './aiBrush';
 import { buildSemanticHeadingHighlightPrompt } from './agentPrompts';
 import { analyzeDocumentText, type DocumentAnalysis } from './documentAnalysis';
 import {
+  buildCropRequest,
+  buildCompressRequest,
   buildEncryptRequest,
+  buildExportImagesRequest,
+  buildExtractImagesRequest,
+  buildExtractPagesRequest,
+  buildExportTextRequest,
+  buildAddAttachmentRequest,
+  buildExtractAttachmentsRequest,
+  buildHtmlToPdfRequest,
+  buildImagesToPdfRequest,
+  buildImageSignatureRequest,
   buildFillFormRequest,
+  buildFreeTextRequest,
+  buildInsertBlankPagesRequest,
+  buildInsertImageRequest,
+  buildMarkdownToPdfRequest,
+  buildRemoveAttachmentsRequest,
+  buildResizePagesRequest,
+  buildSetOutlineRequest,
+  buildShapeRequest,
+  buildRedactRequest,
+  buildStampRequest,
+  buildTextMarkupRequest,
   buildTypedSignatureRequest,
   buildWatermarkRequest,
+  describeCompressionOutput,
   describeFileOutput,
+  SHAPE_ANNOTATION_KINDS,
+  STANDARD_STAMP_KINDS,
+  TEXT_EXPORT_FORMATS,
+  type ShapeAnnotationKind,
+  type StandardStampKind,
+  type TextExportFormat,
+  type TextMarkupKind,
 } from './pdfFileActions';
 import { parsePageRanges } from './pdfRanges';
-import { buildRemainingPageOrder, buildRotationMap } from './pageOperations';
+import { buildRemainingPageOrder, buildRotationMap, expandPageRanges } from './pageOperations';
+import { countHighlightRects } from './pdfHighlights';
+import { pdfPlacementLabel, pdfPlacementPrompt, type PdfPlacementMode } from './pdfPlacementMode';
 import { nativePdfCoreStatusSummary, type NativePdfCoreStatus } from '../shared/native-pdf-core';
 import {
   DEFAULT_AI_PERMISSION_MODE,
+  canAutomaticallyAnalyze,
   getDefaultDocumentAiEnabled,
   isAiAllowed,
   type AiPermissionMode,
@@ -92,9 +131,74 @@ interface FileOutputResponse {
   output: string;
 }
 
+interface CompressResponse extends FileOutputResponse {
+  input_bytes: number;
+  output_bytes: number;
+  saved_bytes: number;
+  saved_percent: number;
+}
+
+interface TextMarkupResponse extends FileOutputResponse {
+  kind: TextMarkupKind;
+  query: string;
+  count: number;
+}
+
+interface RedactResponse extends FileOutputResponse {
+  query: string;
+  count: number;
+  pages: number[];
+}
+
+interface ExtractPagesResponse extends FileOutputResponse {
+  page_count: number;
+}
+
 interface SplitResponse {
   output_dir: string;
   files: string[];
+}
+
+interface ExportImagesResponse {
+  output_dir: string;
+  files: string[];
+  page_count: number;
+  dpi: number;
+}
+
+interface ExtractImagesResponse {
+  output_dir: string;
+  images: Array<{
+    path: string;
+    page: number;
+    xref: number;
+    width: number;
+    height: number;
+    ext: string;
+  }>;
+  count: number;
+}
+
+interface ExportTextResponse {
+  output: string;
+  format: TextExportFormat;
+  page_count: number;
+}
+
+interface OutlineResponse {
+  outline: Array<{ level: number; title: string; page: number; x?: number; y?: number }>;
+  count: number;
+}
+
+interface AttachmentsResponse {
+  attachments: Array<{ name: string; filename: string; description: string; size: number }>;
+  count: number;
+}
+
+interface ExtractAttachmentsResponse {
+  output_dir: string;
+  files: Array<{ name: string; path: string; size: number }>;
+  count: number;
 }
 
 interface ExtractTextResponse {
@@ -103,6 +207,10 @@ interface ExtractTextResponse {
 
 interface DocumentInfoResponse {
   page_count: number;
+}
+
+interface HighlightSearchResponse {
+  operations: HighlightOperation[];
 }
 
 interface FormFieldsResponse {
@@ -121,38 +229,95 @@ export default function App() {
   const [backend, setBackend] = useState<BackendState | null>(null);
   const [nativeCoreStatus, setNativeCoreStatus] = useState<NativePdfCoreStatus | null>(null);
   const [highlightsByDocument, setHighlightsByDocument] = useState<Record<string, HighlightOperation[]>>({});
+  const [searchHighlightsByDocument, setSearchHighlightsByDocument] = useState<Record<string, HighlightOperation[]>>({});
   const [commentTargetsByDocument, setCommentTargetsByDocument] = useState<Record<string, CommentTarget>>({});
+  const [placementMode, setPlacementMode] = useState<PdfPlacementMode>('none');
   const [undoStack, setUndoStack] = useState<Array<{ documentId: string; operations: HighlightOperation[] }>>([]);
   const [redoStack, setRedoStack] = useState<Array<{ documentId: string; operations: HighlightOperation[] }>>([]);
   const [agentOutput, setAgentOutput] = useState<string | null>(null);
-  const [splitOutputDir, setSplitOutputDir] = useState<string | null>(null);
+  const [pathOutput, setPathOutput] = useState<{ path: string; label: string } | null>(null);
   const [sessionExportDir, setSessionExportDir] = useState<string | null>(null);
   const [sessionNotes, setSessionNotes] = useState('');
   const [chatTranscript, setChatTranscript] = useState<ChatTranscriptMessage[]>([]);
   const [commentText, setCommentText] = useState('Needs review');
+  const [markupText, setMarkupText] = useState('');
+  const [redactText, setRedactText] = useState('');
+  const [stampKind, setStampKind] = useState<StandardStampKind>('Approved');
+  const [shapeKind, setShapeKind] = useState<ShapeAnnotationKind>('rectangle');
+  const [shapeDimensions, setShapeDimensions] = useState('160, 90');
+  const [imageFilePath, setImageFilePath] = useState('');
+  const [imageDimensions, setImageDimensions] = useState('180, 120');
   const [splitRanges, setSplitRanges] = useState('');
   const [pageEditRanges, setPageEditRanges] = useState('');
+  const [blankPageInsertAfter, setBlankPageInsertAfter] = useState('');
+  const [blankPageCount, setBlankPageCount] = useState('1');
+  const [pageSizeText, setPageSizeText] = useState('595, 842');
+  const [outlineJson, setOutlineJson] = useState('[]');
+  const [attachmentFilePath, setAttachmentFilePath] = useState('');
+  const [attachmentName, setAttachmentName] = useState('');
+  const [attachmentDescription, setAttachmentDescription] = useState('');
+  const [attachmentNames, setAttachmentNames] = useState('');
   const [rotationDegrees, setRotationDegrees] = useState(90);
+  const [cropMargins, setCropMargins] = useState('36, 36, 36, 36');
   const [watermarkText, setWatermarkText] = useState('Internal Review');
+  const [exportImageDpi, setExportImageDpi] = useState('144');
+  const [exportTextFormat, setExportTextFormat] = useState<TextExportFormat>('markdown');
+  const [conversionImagePaths, setConversionImagePaths] = useState('');
+  const [conversionMarkupTitle, setConversionMarkupTitle] = useState('Converted document');
+  const [conversionHtml, setConversionHtml] = useState('<h1>Title</h1><p>Paste HTML here.</p>');
+  const [conversionMarkdown, setConversionMarkdown] = useState('# Title\n\nPaste Markdown here.');
+  const [conversionPageSize, setConversionPageSize] = useState('595, 842');
+  const [conversionMargin, setConversionMargin] = useState('36');
   const [encryptPassword, setEncryptPassword] = useState('');
   const [formValuesJson, setFormValuesJson] = useState('{\n  "applicant_name": ""\n}');
   const [signatureText, setSignatureText] = useState('');
+  const [signatureImagePath, setSignatureImagePath] = useState('');
+  const [signatureImageDimensions, setSignatureImageDimensions] = useState('180, 60');
   const [aiBrushInstruction, setAiBrushInstruction] = useState('highlight claims that need citations');
   const [skillSearch, setSkillSearch] = useState('');
+  const [pdfSearchQuery, setPdfSearchQuery] = useState('');
+  const [pdfSearchBusy, setPdfSearchBusy] = useState(false);
   const [sidebarView, setSidebarView] = useState<SidebarView>('files');
   const [leftSidebarVisible, setLeftSidebarVisible] = useState(true);
   const [rightSidebarVisible, setRightSidebarVisible] = useState(true);
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [aiPermissionMode, setAiPermissionMode] = useState<AiPermissionMode>(DEFAULT_AI_PERMISSION_MODE);
   const [pendingAgentPrompt, setPendingAgentPrompt] = useState<PendingAgentPrompt | null>(null);
-  const [status, setStatus] = useState<string | null>('AI 默认关闭。打开 PDF 不会自动读取正文。');
+  const [status, setStatus] = useState<string | null>('AI 默认关闭；打开 PDF 会自动做本地文档感知。');
   const [busy, setBusy] = useState(false);
 
   const activeDocument = documents.find((document) => document.id === activeDocumentId) ?? null;
   const highlights = activeDocument ? highlightsByDocument[activeDocument.id] ?? [] : [];
+  const searchHighlights = activeDocument ? searchHighlightsByDocument[activeDocument.id] ?? [] : [];
   const commentTarget = activeDocument ? commentTargetsByDocument[activeDocument.id] ?? null : null;
   const aiAllowed = activeDocument ? isAiAllowed(aiPermissionMode, activeDocument.aiEnabled) : false;
   const filteredSkills = useMemo(() => filterSkillCatalog(SPARROW_SKILLS, skillSearch), [skillSearch]);
+
+  const beginPlacement = useCallback(
+    (mode: PdfPlacementMode) => {
+      if (!activeDocument) {
+        setStatus('Open a PDF first.');
+        return;
+      }
+      setPlacementMode(mode);
+      setCommentTargetsByDocument((current) => {
+        const next = { ...current };
+        delete next[activeDocument.id];
+        return next;
+      });
+      setStatus(pdfPlacementPrompt(mode));
+    },
+    [activeDocument],
+  );
+
+  const clearPlacementTarget = useCallback((documentId: string) => {
+    setPlacementMode('none');
+    setCommentTargetsByDocument((current) => {
+      const next = { ...current };
+      delete next[documentId];
+      return next;
+    });
+  }, []);
 
   const activeDocumentContext = activeDocument
     ? {
@@ -161,7 +326,7 @@ export default function App() {
         label: activeDocument.analysis?.label ?? 'PDF',
         summary:
           activeDocument.analysis?.summary ??
-          (activeDocument.analysisStatus === 'analyzing' ? '正在分析。' : '尚未手动分析。'),
+          (activeDocument.analysisStatus === 'analyzing' ? '正在本地分析。' : '尚未完成本地分析。'),
       }
     : null;
 
@@ -171,7 +336,7 @@ export default function App() {
         title: document.title,
         path: document.path,
         label: document.analysis?.label ?? 'PDF',
-        summary: document.analysis?.summary ?? (document.analysisStatus === 'analyzing' ? '正在分析。' : '尚未手动分析。'),
+        summary: document.analysis?.summary ?? (document.analysisStatus === 'analyzing' ? '正在本地分析。' : '尚未完成本地分析。'),
       })),
     [documents],
   );
@@ -188,6 +353,10 @@ export default function App() {
         setStatus(error instanceof Error ? error.message : String(error));
       });
   }, []);
+
+  useEffect(() => {
+    setPlacementMode('none');
+  }, [activeDocumentId]);
 
   const pdfUrl = useMemo(() => {
     if (!backend || !activeDocument) return null;
@@ -217,12 +386,33 @@ export default function App() {
           path: document.path,
         });
         setDocumentPatch(document.id, { status: 'ready', pageCount: info.page_count });
-        setStatus(`已打开 ${document.title}。分析和 AI 需要手动开启。`);
+        setStatus(`已打开 ${document.title}。AI 仍关闭，本地文档感知会自动运行。`);
       } catch (error) {
         setDocumentPatch(document.id, {
           status: 'error',
           error: error instanceof Error ? error.message : String(error),
         });
+      }
+    },
+    [setDocumentPatch],
+  );
+
+  const analyzeDocumentLocally = useCallback(
+    async (document: SparrowDocument, nextBackend: BackendState, manual = false) => {
+      setDocumentPatch(document.id, { analysisStatus: 'analyzing' });
+      try {
+        const result = await postJson<ExtractTextResponse>(nextBackend.url, nextBackend.token, '/extract-text', {
+          path: document.path,
+        });
+        const text = typeof result.text === 'string' ? result.text : Object.values(result.text).join('\n');
+        setDocumentPatch(document.id, { analysisStatus: 'ready', analysis: analyzeDocumentText(text) });
+        setStatus(`${manual ? '已重新' : '已自动'}完成 ${document.title} 的本地文档感知。`);
+      } catch (error) {
+        setDocumentPatch(document.id, {
+          analysisStatus: 'error',
+          error: error instanceof Error ? error.message : String(error),
+        });
+        setStatus(error instanceof Error ? error.message : String(error));
       }
     },
     [setDocumentPatch],
@@ -259,12 +449,16 @@ export default function App() {
       };
       setDocuments((current) => [...current, document]);
       setHighlightsByDocument((current) => ({ ...current, [document.id]: [] }));
+      setSearchHighlightsByDocument((current) => ({ ...current, [document.id]: [] }));
       setActiveDocumentId(document.id);
       await window.electronAPI.setCurrentFile(path);
-      setStatus(`正在打开 ${document.title}。不会自动读取正文。`);
+      setStatus(`正在打开 ${document.title}，随后会自动做本地文档感知。`);
       void loadDocumentInfo(document, nextBackend);
+      if (canAutomaticallyAnalyze(aiPermissionMode)) {
+        void analyzeDocumentLocally(document, nextBackend);
+      }
     },
-    [activateDocument, addWorkspacePaths, aiPermissionMode, documents, loadDocumentInfo],
+    [activateDocument, addWorkspacePaths, aiPermissionMode, analyzeDocumentLocally, documents, loadDocumentInfo],
   );
 
   const handleOpenFile = async () => {
@@ -294,23 +488,17 @@ export default function App() {
       setStatus('Open a PDF first.');
       return;
     }
-    setDocumentPatch(activeDocument.id, { analysisStatus: 'analyzing' });
     setBusy(true);
     try {
-      const result = await backendPost<ExtractTextResponse>('/extract-text', { path: activeDocument.path });
-      const text = typeof result.text === 'string' ? result.text : Object.values(result.text).join('\n');
-      setDocumentPatch(activeDocument.id, { analysisStatus: 'ready', analysis: analyzeDocumentText(text) });
-      setStatus(`已手动分析 ${activeDocument.title}。`);
-    } catch (error) {
-      setDocumentPatch(activeDocument.id, {
-        analysisStatus: 'error',
-        error: error instanceof Error ? error.message : String(error),
-      });
-      setStatus(error instanceof Error ? error.message : String(error));
+      const nextBackend = backend ?? {
+        url: await window.electronAPI.getBackendUrl(),
+        token: await window.electronAPI.getBackendToken(),
+      };
+      await analyzeDocumentLocally(activeDocument, nextBackend, true);
     } finally {
       setBusy(false);
     }
-  }, [activeDocument, backendPost, setDocumentPatch]);
+  }, [activeDocument, analyzeDocumentLocally, backend]);
 
   const enableAiForActiveDocument = useCallback(() => {
     if (!activeDocument) return;
@@ -340,6 +528,43 @@ export default function App() {
     },
     [activeDocument],
   );
+
+  const clearPdfSearch = useCallback(() => {
+    if (!activeDocument) return;
+    setPdfSearchQuery('');
+    setSearchHighlightsByDocument((current) => ({ ...current, [activeDocument.id]: [] }));
+    setStatus('已清除 PDF 查找结果。');
+  }, [activeDocument]);
+
+  const findInActiveDocument = useCallback(async () => {
+    if (!activeDocument) {
+      setStatus('Open a PDF first.');
+      return;
+    }
+
+    const query = pdfSearchQuery.trim();
+    if (!query) {
+      setSearchHighlightsByDocument((current) => ({ ...current, [activeDocument.id]: [] }));
+      setStatus('输入关键词后再查找。');
+      return;
+    }
+
+    setPdfSearchBusy(true);
+    try {
+      const result = await backendPost<HighlightSearchResponse>('/highlight', {
+        path: activeDocument.path,
+        query,
+        color: [0.15, 0.7, 0.68],
+      });
+      setSearchHighlightsByDocument((current) => ({ ...current, [activeDocument.id]: result.operations }));
+      const matchCount = countHighlightRects(result.operations);
+      setStatus(matchCount > 0 ? `找到 ${matchCount} 处“${query}”。` : `没有找到“${query}”。`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPdfSearchBusy(false);
+    }
+  }, [activeDocument, backendPost, pdfSearchQuery]);
 
   const highlightHeadings = useCallback(() => {
     if (!activeDocument) {
@@ -408,8 +633,8 @@ export default function App() {
       setStatus('Open a PDF first.');
       return;
     }
-    if (!commentTarget) {
-      setStatus('Click a PDF page place comment first.');
+    if (!commentTarget || placementMode !== 'comment') {
+      beginPlacement('comment');
       return;
     }
     const text = commentText.trim();
@@ -418,6 +643,7 @@ export default function App() {
       return;
     }
     setBusy(true);
+    const documentId = activeDocument.id;
     try {
       const result = await backendPost<FileOutputResponse>('/comment', {
         path: activeDocument.path,
@@ -429,13 +655,204 @@ export default function App() {
       });
       setAgentOutput(result.output);
       await loadPdf(result.output);
+      clearPlacementTarget(documentId);
       setStatus(`已添加批注并打开 ${fileName(result.output)}`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
     }
-  }, [activeDocument, backendPost, commentTarget, commentText, loadPdf]);
+  }, [activeDocument, backendPost, beginPlacement, clearPlacementTarget, commentTarget, commentText, loadPdf, placementMode]);
+
+  const addFreeText = useCallback(async () => {
+    if (!activeDocument) {
+      setStatus('Open a PDF first.');
+      return;
+    }
+    if (!commentTarget || placementMode !== 'free-text') {
+      beginPlacement('free-text');
+      return;
+    }
+    setBusy(true);
+    const documentId = activeDocument.id;
+    try {
+      const request = buildFreeTextRequest(
+        activeDocument.path,
+        commentTarget.page,
+        commentTarget.x,
+        commentTarget.y,
+        commentText,
+        'Sparrow',
+      );
+      const result = await backendPost<FileOutputResponse>('/free-text', request);
+      setAgentOutput(result.output);
+      await loadPdf(result.output);
+      clearPlacementTarget(documentId);
+      setStatus(describeFileOutput('free-text', result.output));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeDocument, backendPost, beginPlacement, clearPlacementTarget, commentTarget, commentText, loadPdf, placementMode]);
+
+  const addStamp = useCallback(async () => {
+    if (!activeDocument) {
+      setStatus('Open a PDF first.');
+      return;
+    }
+    if (!commentTarget || placementMode !== 'stamp') {
+      beginPlacement('stamp');
+      return;
+    }
+    setBusy(true);
+    const documentId = activeDocument.id;
+    try {
+      const result = await backendPost<FileOutputResponse>(
+        '/stamp',
+        buildStampRequest(activeDocument.path, commentTarget.page, commentTarget.x, commentTarget.y, stampKind, 'Sparrow'),
+      );
+      setAgentOutput(result.output);
+      await loadPdf(result.output);
+      clearPlacementTarget(documentId);
+      setStatus(describeFileOutput('stamp', result.output));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeDocument, backendPost, beginPlacement, clearPlacementTarget, commentTarget, loadPdf, placementMode, stampKind]);
+
+  const addShape = useCallback(async () => {
+    if (!activeDocument) {
+      setStatus('Open a PDF first.');
+      return;
+    }
+    if (!commentTarget || placementMode !== 'shape') {
+      beginPlacement('shape');
+      return;
+    }
+    setBusy(true);
+    const documentId = activeDocument.id;
+    try {
+      const result = await backendPost<FileOutputResponse>(
+        '/shape',
+        buildShapeRequest(
+          activeDocument.path,
+          commentTarget.page,
+          commentTarget.x,
+          commentTarget.y,
+          shapeKind,
+          shapeDimensions,
+          'Sparrow',
+        ),
+      );
+      setAgentOutput(result.output);
+      await loadPdf(result.output);
+      clearPlacementTarget(documentId);
+      setStatus(describeFileOutput('shape', result.output));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeDocument, backendPost, beginPlacement, clearPlacementTarget, commentTarget, loadPdf, placementMode, shapeDimensions, shapeKind]);
+
+  const addPdfImage = useCallback(async () => {
+    if (!activeDocument) {
+      setStatus('Open a PDF first.');
+      return;
+    }
+    if (!commentTarget || placementMode !== 'image') {
+      beginPlacement('image');
+      return;
+    }
+    setBusy(true);
+    const documentId = activeDocument.id;
+    try {
+      const result = await backendPost<FileOutputResponse>(
+        '/insert-image',
+        buildInsertImageRequest(
+          activeDocument.path,
+          commentTarget.page,
+          commentTarget.x,
+          commentTarget.y,
+          imageFilePath,
+          imageDimensions,
+        ),
+      );
+      setAgentOutput(result.output);
+      await loadPdf(result.output);
+      clearPlacementTarget(documentId);
+      setStatus(describeFileOutput('insert-image', result.output));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [
+    activeDocument,
+    backendPost,
+    beginPlacement,
+    clearPlacementTarget,
+    commentTarget,
+    imageDimensions,
+    imageFilePath,
+    loadPdf,
+    placementMode,
+  ]);
+
+  const addTextMarkup = useCallback(
+    async (kind: TextMarkupKind) => {
+      if (!activeDocument) {
+        setStatus('Open a PDF first.');
+        return;
+      }
+      setBusy(true);
+      try {
+        const result = await backendPost<TextMarkupResponse>(
+          '/text-markup',
+          buildTextMarkupRequest(activeDocument.path, markupText, kind, 'Sparrow'),
+        );
+        setAgentOutput(result.output);
+        await loadPdf(result.output);
+        setStatus(`${describeFileOutput(kind, result.output)}，共 ${result.count} 处。`);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : String(error));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [activeDocument, backendPost, loadPdf, markupText],
+  );
+
+  const redactPdfText = useCallback(async () => {
+    if (!activeDocument) {
+      setStatus('Open a PDF first.');
+      return;
+    }
+    setBusy(true);
+    try {
+      let pageIndices: number[] | undefined;
+      if (pageEditRanges.trim()) {
+        if (!activeDocument.pageCount) throw new Error('Page count is not ready yet.');
+        const pageRanges = parsePageRanges(pageEditRanges);
+        pageIndices = pageRanges ? expandPageRanges(activeDocument.pageCount, pageRanges) : undefined;
+      }
+      const result = await backendPost<RedactResponse>(
+        '/redact',
+        buildRedactRequest(activeDocument.path, redactText, pageIndices),
+      );
+      setAgentOutput(result.output);
+      await loadPdf(result.output);
+      const pages = result.pages.length ? `，涉及 ${result.pages.length} 页` : '';
+      setStatus(`${describeFileOutput('redact', result.output)}，共 ${result.count} 处${pages}。`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeDocument, backendPost, loadPdf, pageEditRanges, redactText]);
 
   const splitPdf = useCallback(async () => {
     if (!activeDocument) {
@@ -450,7 +867,7 @@ export default function App() {
         ...(pageRanges ? { page_ranges: pageRanges } : {}),
       });
       setAgentOutput(null);
-      setSplitOutputDir(result.output_dir);
+      setPathOutput({ path: result.output_dir, label: 'Open split folder' });
       setStatus(`已拆分为 ${result.files.length} 个 PDF：${result.output_dir}`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
@@ -519,6 +936,225 @@ export default function App() {
     }
   }, [activeDocument, backendPost, loadPdf, pageEditRanges]);
 
+  const extractPages = useCallback(async () => {
+    if (!activeDocument?.pageCount) {
+      setStatus('Page count is not ready yet.');
+      return;
+    }
+    if (!pageEditRanges.trim()) {
+      setStatus('Enter page ranges to extract, for example 2-5, 8.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const pageRanges = parsePageRanges(pageEditRanges);
+      if (!pageRanges) throw new Error('Enter page ranges to extract.');
+      const pageIndices = expandPageRanges(activeDocument.pageCount, pageRanges);
+      const result = await backendPost<ExtractPagesResponse>(
+        '/extract-pages',
+        buildExtractPagesRequest(activeDocument.path, pageIndices),
+      );
+      setAgentOutput(result.output);
+      await loadPdf(result.output);
+      setStatus(`${describeFileOutput('extract', result.output)}，共 ${result.page_count} 页。`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeDocument, backendPost, loadPdf, pageEditRanges]);
+
+  const insertBlankPages = useCallback(async () => {
+    if (!activeDocument?.pageCount) {
+      setStatus('Page count is not ready yet.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await backendPost<ExtractPagesResponse>(
+        '/insert-blank-pages',
+        buildInsertBlankPagesRequest(
+          activeDocument.path,
+          blankPageInsertAfter,
+          blankPageCount,
+          activeDocument.pageCount,
+          pageSizeText,
+        ),
+      );
+      setAgentOutput(result.output);
+      await loadPdf(result.output);
+      setStatus(`${describeFileOutput('insert-blank-pages', result.output)}，共插入 ${result.page_count} 页。`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeDocument, backendPost, blankPageCount, blankPageInsertAfter, loadPdf, pageSizeText]);
+
+  const cropPages = useCallback(async () => {
+    if (!activeDocument?.pageCount) {
+      setStatus('Page count is not ready yet.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const pageRanges = parsePageRanges(pageEditRanges);
+      const pageIndices = pageRanges ? expandPageRanges(activeDocument.pageCount, pageRanges) : undefined;
+      const result = await backendPost<FileOutputResponse>(
+        '/crop',
+        buildCropRequest(activeDocument.path, cropMargins, pageIndices),
+      );
+      setAgentOutput(result.output);
+      await loadPdf(result.output);
+      setStatus(describeFileOutput('crop', result.output));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeDocument, backendPost, cropMargins, loadPdf, pageEditRanges]);
+
+  const resizePages = useCallback(async () => {
+    if (!activeDocument?.pageCount) {
+      setStatus('Page count is not ready yet.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const pageRanges = parsePageRanges(pageEditRanges);
+      const pageIndices = pageRanges ? expandPageRanges(activeDocument.pageCount, pageRanges) : undefined;
+      const result = await backendPost<FileOutputResponse>(
+        '/resize-pages',
+        buildResizePagesRequest(activeDocument.path, pageSizeText, pageIndices),
+      );
+      setAgentOutput(result.output);
+      await loadPdf(result.output);
+      setStatus(describeFileOutput('resize-pages', result.output));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeDocument, backendPost, loadPdf, pageEditRanges, pageSizeText]);
+
+  const readOutline = useCallback(async () => {
+    if (!activeDocument) {
+      setStatus('Open a PDF first.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await backendPost<OutlineResponse>('/outline', { path: activeDocument.path });
+      setOutlineJson(JSON.stringify(result.outline, null, 2));
+      setStatus(`检测到 ${result.count} 个书签/大纲项。`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeDocument, backendPost]);
+
+  const setOutline = useCallback(async () => {
+    if (!activeDocument?.pageCount) {
+      setStatus('Page count is not ready yet.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await backendPost<FileOutputResponse>(
+        '/set-outline',
+        buildSetOutlineRequest(activeDocument.path, outlineJson, activeDocument.pageCount),
+      );
+      setAgentOutput(result.output);
+      await loadPdf(result.output);
+      setStatus(describeFileOutput('set-outline', result.output));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeDocument, backendPost, loadPdf, outlineJson]);
+
+  const listAttachments = useCallback(async () => {
+    if (!activeDocument) {
+      setStatus('Open a PDF first.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await backendPost<AttachmentsResponse>('/attachments', { path: activeDocument.path });
+      setAttachmentNames(result.attachments.map((attachment) => attachment.name).join('\n'));
+      setStatus(`检测到 ${result.count} 个 PDF 附件。`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeDocument, backendPost]);
+
+  const addAttachment = useCallback(async () => {
+    if (!activeDocument) {
+      setStatus('Open a PDF first.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await backendPost<FileOutputResponse>(
+        '/add-attachment',
+        buildAddAttachmentRequest(activeDocument.path, attachmentFilePath, attachmentName, attachmentDescription),
+      );
+      setAgentOutput(result.output);
+      await loadPdf(result.output);
+      setStatus(describeFileOutput('add-attachment', result.output));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeDocument, attachmentDescription, attachmentFilePath, attachmentName, backendPost, loadPdf]);
+
+  const extractAttachments = useCallback(async () => {
+    if (!activeDocument) {
+      setStatus('Open a PDF first.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await backendPost<ExtractAttachmentsResponse>(
+        '/extract-attachments',
+        buildExtractAttachmentsRequest(activeDocument.path, attachmentNames),
+      );
+      setAgentOutput(null);
+      setPathOutput({ path: result.output_dir, label: 'Open attachments folder' });
+      setStatus(`已提取 ${result.count} 个附件到 ${result.output_dir}。`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeDocument, attachmentNames, backendPost]);
+
+  const removeAttachments = useCallback(async () => {
+    if (!activeDocument) {
+      setStatus('Open a PDF first.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await backendPost<FileOutputResponse>(
+        '/remove-attachments',
+        buildRemoveAttachmentsRequest(activeDocument.path, attachmentNames),
+      );
+      setAgentOutput(result.output);
+      await loadPdf(result.output);
+      setStatus(describeFileOutput('remove-attachments', result.output));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeDocument, attachmentNames, backendPost, loadPdf]);
+
   const addWatermark = useCallback(async () => {
     if (!activeDocument) {
       setStatus('Open a PDF first.');
@@ -539,6 +1175,151 @@ export default function App() {
       setBusy(false);
     }
   }, [activeDocument, backendPost, loadPdf, watermarkText]);
+
+  const compressPdf = useCallback(async () => {
+    if (!activeDocument) {
+      setStatus('Open a PDF first.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await backendPost<CompressResponse>('/compress', buildCompressRequest(activeDocument.path));
+      setAgentOutput(result.output);
+      await loadPdf(result.output);
+      setStatus(describeCompressionOutput(result.output, result.saved_bytes, result.saved_percent));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeDocument, backendPost, loadPdf]);
+
+  const exportImages = useCallback(async () => {
+    if (!activeDocument?.pageCount) {
+      setStatus('Page count is not ready yet.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const pageRanges = parsePageRanges(pageEditRanges);
+      const pageIndices = pageRanges ? expandPageRanges(activeDocument.pageCount, pageRanges) : undefined;
+      const result = await backendPost<ExportImagesResponse>(
+        '/export-images',
+        buildExportImagesRequest(activeDocument.path, exportImageDpi, pageIndices),
+      );
+      setAgentOutput(null);
+      setPathOutput({ path: result.output_dir, label: 'Open image folder' });
+      setStatus(`已导出 ${result.page_count} 张 PNG 图片到 ${result.output_dir}（${result.dpi} DPI）。`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeDocument, backendPost, exportImageDpi, pageEditRanges]);
+
+  const extractImages = useCallback(async () => {
+    if (!activeDocument?.pageCount) {
+      setStatus('Page count is not ready yet.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const pageRanges = parsePageRanges(pageEditRanges);
+      const pageIndices = pageRanges ? expandPageRanges(activeDocument.pageCount, pageRanges) : undefined;
+      const result = await backendPost<ExtractImagesResponse>(
+        '/extract-images',
+        buildExtractImagesRequest(activeDocument.path, pageIndices),
+      );
+      setAgentOutput(null);
+      setPathOutput({ path: result.output_dir, label: 'Open extracted images' });
+      setStatus(
+        result.count > 0
+          ? `已提取 ${result.count} 张内嵌图片到 ${result.output_dir}。`
+          : `未找到内嵌图片，已检查并创建输出目录：${result.output_dir}`,
+      );
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeDocument, backendPost, pageEditRanges]);
+
+  const exportText = useCallback(async () => {
+    if (!activeDocument?.pageCount) {
+      setStatus('Page count is not ready yet.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const pageRanges = parsePageRanges(pageEditRanges);
+      const pageIndices = pageRanges ? expandPageRanges(activeDocument.pageCount, pageRanges) : undefined;
+      const result = await backendPost<ExportTextResponse>(
+        '/export-text',
+        buildExportTextRequest(activeDocument.path, exportTextFormat, pageIndices),
+      );
+      setAgentOutput(null);
+      setPathOutput({
+        path: result.output,
+        label: result.format === 'markdown' ? 'Open Markdown export' : 'Open text export',
+      });
+      setStatus(`已导出 ${result.page_count} 页为 ${result.format === 'markdown' ? 'Markdown' : 'TXT'}：${result.output}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [activeDocument, backendPost, exportTextFormat, pageEditRanges]);
+
+  const convertImagesToPdf = useCallback(async () => {
+    setBusy(true);
+    try {
+      const result = await backendPost<ExtractPagesResponse>(
+        '/images-to-pdf',
+        buildImagesToPdfRequest(conversionImagePaths, conversionPageSize, conversionMargin),
+      );
+      setAgentOutput(result.output);
+      await loadPdf(result.output);
+      setStatus(`${describeFileOutput('images-to-pdf', result.output)}，共 ${result.page_count} 页。`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [backendPost, conversionImagePaths, conversionMargin, conversionPageSize, loadPdf]);
+
+  const convertHtmlToPdf = useCallback(async () => {
+    setBusy(true);
+    try {
+      const result = await backendPost<ExtractPagesResponse>(
+        '/html-to-pdf',
+        buildHtmlToPdfRequest(conversionHtml, conversionMarkupTitle, conversionPageSize, conversionMargin),
+      );
+      setAgentOutput(result.output);
+      await loadPdf(result.output);
+      setStatus(`${describeFileOutput('html-to-pdf', result.output)}，共 ${result.page_count} 页。`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [backendPost, conversionHtml, conversionMargin, conversionMarkupTitle, conversionPageSize, loadPdf]);
+
+  const convertMarkdownToPdf = useCallback(async () => {
+    setBusy(true);
+    try {
+      const result = await backendPost<ExtractPagesResponse>(
+        '/markdown-to-pdf',
+        buildMarkdownToPdfRequest(conversionMarkdown, conversionMarkupTitle, conversionPageSize, conversionMargin),
+      );
+      setAgentOutput(result.output);
+      await loadPdf(result.output);
+      setStatus(`${describeFileOutput('markdown-to-pdf', result.output)}，共 ${result.page_count} 页。`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [backendPost, conversionMarkdown, conversionMargin, conversionMarkupTitle, conversionPageSize, loadPdf]);
 
   const encryptPdf = useCallback(async () => {
     if (!activeDocument) {
@@ -601,11 +1382,12 @@ export default function App() {
       setStatus('Open a PDF first.');
       return;
     }
-    if (!commentTarget) {
-      setStatus('Click a PDF page to choose signature position first.');
+    if (!commentTarget || placementMode !== 'signature') {
+      beginPlacement('signature');
       return;
     }
     setBusy(true);
+    const documentId = activeDocument.id;
     try {
       const request = buildTypedSignatureRequest(
         activeDocument.path,
@@ -617,13 +1399,60 @@ export default function App() {
       const result = await backendPost<FileOutputResponse>('/signature', request);
       setAgentOutput(result.output);
       await loadPdf(result.output);
+      clearPlacementTarget(documentId);
       setStatus(describeFileOutput('signature', result.output));
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
     }
-  }, [activeDocument, backendPost, commentTarget, loadPdf, signatureText]);
+  }, [activeDocument, backendPost, beginPlacement, clearPlacementTarget, commentTarget, loadPdf, placementMode, signatureText]);
+
+  const addImageSignature = useCallback(async () => {
+    if (!activeDocument) {
+      setStatus('Open a PDF first.');
+      return;
+    }
+    if (!commentTarget || placementMode !== 'image-signature') {
+      beginPlacement('image-signature');
+      return;
+    }
+    setBusy(true);
+    const documentId = activeDocument.id;
+    try {
+      const result = await backendPost<FileOutputResponse>(
+        '/image-signature',
+        buildImageSignatureRequest(
+          activeDocument.path,
+          commentTarget.page,
+          commentTarget.x,
+          commentTarget.y,
+          signatureImagePath,
+          signatureImageDimensions,
+          signatureText || 'Sparrow',
+        ),
+      );
+      setAgentOutput(result.output);
+      await loadPdf(result.output);
+      clearPlacementTarget(documentId);
+      setStatus(describeFileOutput('image-signature', result.output));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [
+    activeDocument,
+    backendPost,
+    beginPlacement,
+    clearPlacementTarget,
+    commentTarget,
+    loadPdf,
+    placementMode,
+    signatureImageDimensions,
+    signatureImagePath,
+    signatureText,
+  ]);
 
   const runAiBrush = useCallback(() => {
     if (!activeDocument) {
@@ -713,13 +1542,26 @@ export default function App() {
 
   const handleFileOutput = useCallback((path: string) => {
     setAgentOutput(path);
+    setPathOutput(null);
     setStatus(`Agent produced ${fileName(path)}`);
   }, []);
 
   const handleSplitOutput = useCallback((outputDir: string, fileCount: number) => {
     setAgentOutput(null);
-    setSplitOutputDir(outputDir);
+    setPathOutput({ path: outputDir, label: 'Open split folder' });
     setStatus(`Agent split into ${fileCount} PDFs at ${outputDir}`);
+  }, []);
+
+  const handleFolderOutput = useCallback((outputDir: string, label: string, fileCount: number) => {
+    setAgentOutput(null);
+    setPathOutput({ path: outputDir, label });
+    setStatus(`Agent produced ${fileCount} files at ${outputDir}`);
+  }, []);
+
+  const handlePathOutput = useCallback((path: string, label: string) => {
+    setAgentOutput(null);
+    setPathOutput({ path, label });
+    setStatus(`Agent produced ${fileName(path)}`);
   }, []);
 
   const activityItems: Array<{ id: SidebarView; label: string; icon: typeof FileText }> = [
@@ -806,14 +1648,30 @@ export default function App() {
                   undoDisabled={undoStack.length === 0}
                   redoDisabled={redoStack.length === 0}
                   pageEditRanges={pageEditRanges}
+                  blankPageInsertAfter={blankPageInsertAfter}
+                  blankPageCount={blankPageCount}
+                  pageSizeText={pageSizeText}
+                  outlineJson={outlineJson}
+                  attachmentFilePath={attachmentFilePath}
+                  attachmentName={attachmentName}
+                  attachmentDescription={attachmentDescription}
+                  attachmentNames={attachmentNames}
                   rotationDegrees={rotationDegrees}
+                  cropMargins={cropMargins}
                   splitRanges={splitRanges}
                   commentText={commentText}
+                  markupText={markupText}
+                  stampKind={stampKind}
                   commentTarget={commentTarget}
+                  placementMode={placementMode}
+                  imageFilePath={imageFilePath}
+                  imageDimensions={imageDimensions}
                   watermarkText={watermarkText}
                   encryptPassword={encryptPassword}
                   formValuesJson={formValuesJson}
                   signatureText={signatureText}
+                  signatureImagePath={signatureImagePath}
+                  signatureImageDimensions={signatureImageDimensions}
                   aiBrushInstruction={aiBrushInstruction}
                   sessionNotes={sessionNotes}
                   nativeCoreStatus={nativeCoreStatus}
@@ -824,15 +1682,73 @@ export default function App() {
                   onRedo={redo}
                   onApplyHighlights={applyHighlights}
                   onSetPageEditRanges={setPageEditRanges}
+                  onSetBlankPageInsertAfter={setBlankPageInsertAfter}
+                  onSetBlankPageCount={setBlankPageCount}
+                  onSetPageSizeText={setPageSizeText}
+                  onInsertBlankPages={insertBlankPages}
+                  onResizePages={resizePages}
+                  onSetOutlineJson={setOutlineJson}
+                  onReadOutline={readOutline}
+                  onSetOutline={setOutline}
+                  onSetAttachmentFilePath={setAttachmentFilePath}
+                  onSetAttachmentName={setAttachmentName}
+                  onSetAttachmentDescription={setAttachmentDescription}
+                  onSetAttachmentNames={setAttachmentNames}
+                  onListAttachments={listAttachments}
+                  onAddAttachment={addAttachment}
+                  onExtractAttachments={extractAttachments}
+                  onRemoveAttachments={removeAttachments}
                   onSetRotationDegrees={setRotationDegrees}
                   onRotatePages={rotatePages}
                   onDeletePages={deletePages}
+                  onExtractPages={extractPages}
+                  onSetCropMargins={setCropMargins}
+                  onCropPages={cropPages}
                   onSetSplitRanges={setSplitRanges}
                   onSplitPdf={splitPdf}
                   onSetCommentText={setCommentText}
                   onAddComment={addComment}
+                  onAddFreeText={addFreeText}
+                  onSetMarkupText={setMarkupText}
+                  onAddTextMarkup={addTextMarkup}
+                  redactText={redactText}
+                  onSetRedactText={setRedactText}
+                  onRedactText={redactPdfText}
+                  onSetStampKind={setStampKind}
+                  onAddStamp={addStamp}
+                  shapeKind={shapeKind}
+                  shapeDimensions={shapeDimensions}
+                  onSetShapeKind={setShapeKind}
+                  onSetShapeDimensions={setShapeDimensions}
+                  onAddShape={addShape}
+                  onSetImageFilePath={setImageFilePath}
+                  onSetImageDimensions={setImageDimensions}
+                  onAddPdfImage={addPdfImage}
                   onSetWatermarkText={setWatermarkText}
                   onAddWatermark={addWatermark}
+                  onCompressPdf={compressPdf}
+                  exportImageDpi={exportImageDpi}
+                  conversionImagePaths={conversionImagePaths}
+                  conversionMarkupTitle={conversionMarkupTitle}
+                  conversionHtml={conversionHtml}
+                  conversionMarkdown={conversionMarkdown}
+                  conversionPageSize={conversionPageSize}
+                  conversionMargin={conversionMargin}
+                  onSetExportImageDpi={setExportImageDpi}
+                  onExportImages={exportImages}
+                  onExtractImages={extractImages}
+                  exportTextFormat={exportTextFormat}
+                  onSetExportTextFormat={setExportTextFormat}
+                  onExportText={exportText}
+                  onSetConversionImagePaths={setConversionImagePaths}
+                  onSetConversionMarkupTitle={setConversionMarkupTitle}
+                  onSetConversionHtml={setConversionHtml}
+                  onSetConversionMarkdown={setConversionMarkdown}
+                  onSetConversionPageSize={setConversionPageSize}
+                  onSetConversionMargin={setConversionMargin}
+                  onConvertImagesToPdf={convertImagesToPdf}
+                  onConvertHtmlToPdf={convertHtmlToPdf}
+                  onConvertMarkdownToPdf={convertMarkdownToPdf}
                   onSetEncryptPassword={setEncryptPassword}
                   onEncryptPdf={encryptPdf}
                   onReadFormFields={readFormFields}
@@ -840,6 +1756,9 @@ export default function App() {
                   onFillFormFields={fillFormFields}
                   onSetSignatureText={setSignatureText}
                   onAddTypedSignature={addTypedSignature}
+                  onSetSignatureImagePath={setSignatureImagePath}
+                  onSetSignatureImageDimensions={setSignatureImageDimensions}
+                  onAddImageSignature={addImageSignature}
                   onSetAiBrushInstruction={setAiBrushInstruction}
                   onRunAiBrush={runAiBrush}
                   onSetSessionNotes={setSessionNotes}
@@ -908,9 +1827,9 @@ export default function App() {
                   </button>
                 </>
               )}
-              {splitOutputDir && !agentOutput && (
-                <button className="ghost-button" onClick={() => void openOutputPath(splitOutputDir)}>
-                  Open split folder
+              {pathOutput && !agentOutput && (
+                <button className="ghost-button" onClick={() => void openOutputPath(pathOutput.path)}>
+                  {pathOutput.label}
                 </button>
               )}
               {sessionExportDir && (
@@ -927,10 +1846,21 @@ export default function App() {
                 url={pdfUrl}
                 token={backend.token}
                 highlights={highlights}
+                searchHighlights={searchHighlights}
+                searchQuery={pdfSearchQuery}
+                searchBusy={pdfSearchBusy}
+                onSearchQueryChange={setPdfSearchQuery}
+                onSearchSubmit={() => void findInActiveDocument()}
+                onSearchClear={clearPdfSearch}
                 commentTarget={commentTarget}
+                targetMode={placementMode}
                 onCommentTargetChange={(target) => {
                   setCommentTargetsByDocument((current) => ({ ...current, [activeDocument.id]: target }));
-                  setStatus(`Comment target set on page ${target.page + 1}.`);
+                  setStatus(
+                    `已选择 ${pdfPlacementLabel(placementMode)} 位置：第 ${target.page + 1} 页，${Math.round(
+                      target.x,
+                    )},${Math.round(target.y)}。再次点击对应工具执行。`,
+                  );
                 }}
               />
             ) : (
@@ -949,16 +1879,19 @@ export default function App() {
               workspaceDocuments={workspaceDocuments}
               aiEnabled={aiAllowed}
               privacyMode={aiPermissionMode}
+              onPrivacyModeChange={setAiPermissionMode}
               externalPrompt={pendingAgentPrompt}
               onExternalPromptConsumed={(id) => {
                 setPendingAgentPrompt((current) => (current?.id === id ? null : current));
               }}
               onEnableAi={enableAiForActiveDocument}
               onAnalyzeDocument={analyzeActiveDocument}
-                onFileOutput={handleFileOutput}
-                onSplitOutput={handleSplitOutput}
-                onPreviewHighlights={addHighlightBatch}
-                onTranscriptChange={setChatTranscript}
+              onFileOutput={handleFileOutput}
+              onSplitOutput={handleSplitOutput}
+              onFolderOutput={handleFolderOutput}
+              onPathOutput={handlePathOutput}
+              onPreviewHighlights={addHighlightBatch}
+              onTranscriptChange={setChatTranscript}
               />
           )}
         </div>
@@ -1147,14 +2080,41 @@ interface ToolsPaneProps {
   undoDisabled: boolean;
   redoDisabled: boolean;
   pageEditRanges: string;
+  blankPageInsertAfter: string;
+  blankPageCount: string;
+  pageSizeText: string;
+  outlineJson: string;
+  attachmentFilePath: string;
+  attachmentName: string;
+  attachmentDescription: string;
+  attachmentNames: string;
   rotationDegrees: number;
+  cropMargins: string;
   splitRanges: string;
   commentText: string;
+  markupText: string;
+  redactText: string;
+  stampKind: StandardStampKind;
+  shapeKind: ShapeAnnotationKind;
+  shapeDimensions: string;
+  imageFilePath: string;
+  imageDimensions: string;
   commentTarget: CommentTarget | null;
+  placementMode: PdfPlacementMode;
   watermarkText: string;
+  exportImageDpi: string;
+  exportTextFormat: TextExportFormat;
+  conversionImagePaths: string;
+  conversionMarkupTitle: string;
+  conversionHtml: string;
+  conversionMarkdown: string;
+  conversionPageSize: string;
+  conversionMargin: string;
   encryptPassword: string;
   formValuesJson: string;
   signatureText: string;
+  signatureImagePath: string;
+  signatureImageDimensions: string;
   aiBrushInstruction: string;
   sessionNotes: string;
   nativeCoreStatus: NativePdfCoreStatus | null;
@@ -1165,15 +2125,62 @@ interface ToolsPaneProps {
   onRedo: () => void;
   onApplyHighlights: () => void;
   onSetPageEditRanges: (value: string) => void;
+  onSetBlankPageInsertAfter: (value: string) => void;
+  onSetBlankPageCount: (value: string) => void;
+  onSetPageSizeText: (value: string) => void;
+  onInsertBlankPages: () => void;
+  onResizePages: () => void;
+  onSetOutlineJson: (value: string) => void;
+  onReadOutline: () => void;
+  onSetOutline: () => void;
+  onSetAttachmentFilePath: (value: string) => void;
+  onSetAttachmentName: (value: string) => void;
+  onSetAttachmentDescription: (value: string) => void;
+  onSetAttachmentNames: (value: string) => void;
+  onListAttachments: () => void;
+  onAddAttachment: () => void;
+  onExtractAttachments: () => void;
+  onRemoveAttachments: () => void;
   onSetRotationDegrees: (value: number) => void;
   onRotatePages: () => void;
   onDeletePages: () => void;
+  onExtractPages: () => void;
+  onSetCropMargins: (value: string) => void;
+  onCropPages: () => void;
   onSetSplitRanges: (value: string) => void;
   onSplitPdf: () => void;
   onSetCommentText: (value: string) => void;
   onAddComment: () => void;
+  onAddFreeText: () => void;
+  onSetMarkupText: (value: string) => void;
+  onAddTextMarkup: (kind: TextMarkupKind) => void;
+  onSetRedactText: (value: string) => void;
+  onRedactText: () => void;
+  onSetStampKind: (value: StandardStampKind) => void;
+  onAddStamp: () => void;
+  onSetShapeKind: (value: ShapeAnnotationKind) => void;
+  onSetShapeDimensions: (value: string) => void;
+  onAddShape: () => void;
+  onSetImageFilePath: (value: string) => void;
+  onSetImageDimensions: (value: string) => void;
+  onAddPdfImage: () => void;
   onSetWatermarkText: (value: string) => void;
   onAddWatermark: () => void;
+  onCompressPdf: () => void;
+  onSetExportImageDpi: (value: string) => void;
+  onExportImages: () => void;
+  onExtractImages: () => void;
+  onSetExportTextFormat: (value: TextExportFormat) => void;
+  onExportText: () => void;
+  onSetConversionImagePaths: (value: string) => void;
+  onSetConversionMarkupTitle: (value: string) => void;
+  onSetConversionHtml: (value: string) => void;
+  onSetConversionMarkdown: (value: string) => void;
+  onSetConversionPageSize: (value: string) => void;
+  onSetConversionMargin: (value: string) => void;
+  onConvertImagesToPdf: () => void;
+  onConvertHtmlToPdf: () => void;
+  onConvertMarkdownToPdf: () => void;
   onSetEncryptPassword: (value: string) => void;
   onEncryptPdf: () => void;
   onReadFormFields: () => void;
@@ -1181,6 +2188,9 @@ interface ToolsPaneProps {
   onFillFormFields: () => void;
   onSetSignatureText: (value: string) => void;
   onAddTypedSignature: () => void;
+  onSetSignatureImagePath: (value: string) => void;
+  onSetSignatureImageDimensions: (value: string) => void;
+  onAddImageSignature: () => void;
   onSetAiBrushInstruction: (value: string) => void;
   onRunAiBrush: () => void;
   onSetSessionNotes: (value: string) => void;
@@ -1189,6 +2199,7 @@ interface ToolsPaneProps {
 
 function ToolsPane(props: ToolsPaneProps) {
   const disabled = !props.activeDocument || props.busy;
+  const conversionDisabled = props.busy;
   return (
     <div className="sidebar-content">
       <section className="sidebar-section">
@@ -1196,7 +2207,7 @@ function ToolsPane(props: ToolsPaneProps) {
         <div className="tool-grid">
           <button onClick={props.onAnalyze} disabled={disabled}>
             <Sparkles size={15} />
-            Analyze
+            Re-analyze
           </button>
           <button onClick={props.onHighlightHeadings} disabled={disabled}>
             <Highlighter size={15} />
@@ -1240,6 +2251,110 @@ function ToolsPane(props: ToolsPaneProps) {
             <Trash2 size={15} />
             Delete
           </button>
+          <button onClick={props.onExtractPages} disabled={disabled || !props.pageEditRanges.trim()}>
+            <FileText size={15} />
+            Extract
+          </button>
+          <input
+            value={props.blankPageInsertAfter}
+            onChange={(event) => props.onSetBlankPageInsertAfter(event.target.value)}
+            placeholder="Insert after page"
+            disabled={disabled}
+          />
+          <input
+            value={props.blankPageCount}
+            onChange={(event) => props.onSetBlankPageCount(event.target.value)}
+            placeholder="Blank count"
+            disabled={disabled}
+          />
+          <button onClick={props.onInsertBlankPages} disabled={disabled}>
+            <FileText size={15} />
+            Blank
+          </button>
+          <input
+            value={props.pageSizeText}
+            onChange={(event) => props.onSetPageSizeText(event.target.value)}
+            placeholder="Page size: 595, 842"
+            disabled={disabled}
+          />
+          <button onClick={props.onResizePages} disabled={disabled}>
+            <Crop size={15} />
+            Resize
+          </button>
+          <input
+            value={props.cropMargins}
+            onChange={(event) => props.onSetCropMargins(event.target.value)}
+            placeholder="Crop margins: left, top, right, bottom"
+            disabled={disabled}
+          />
+          <button onClick={props.onCropPages} disabled={disabled}>
+            <Crop size={15} />
+            Crop
+          </button>
+        </div>
+      </section>
+
+      <section className="sidebar-section">
+        <div className="section-title">Outline & Attachments</div>
+        <div className="page-tools">
+          <textarea
+            className="session-notes-input compact-textarea"
+            value={props.outlineJson}
+            onChange={(event) => props.onSetOutlineJson(event.target.value)}
+            placeholder='[{"level":1,"title":"Introduction","page":1}]'
+            rows={4}
+            disabled={disabled}
+          />
+          <button onClick={props.onReadOutline} disabled={disabled}>
+            <FileText size={15} />
+            Read outline
+          </button>
+          <button onClick={props.onSetOutline} disabled={disabled}>
+            <FileText size={15} />
+            Save outline
+          </button>
+          <input
+            value={props.attachmentFilePath}
+            onChange={(event) => props.onSetAttachmentFilePath(event.target.value)}
+            placeholder="Attachment file path"
+            disabled={disabled}
+          />
+          <input
+            value={props.attachmentName}
+            onChange={(event) => props.onSetAttachmentName(event.target.value)}
+            placeholder="Attachment name"
+            disabled={disabled}
+          />
+          <input
+            value={props.attachmentDescription}
+            onChange={(event) => props.onSetAttachmentDescription(event.target.value)}
+            placeholder="Attachment description"
+            disabled={disabled}
+          />
+          <button onClick={props.onAddAttachment} disabled={disabled}>
+            <PackageOpen size={15} />
+            Attach
+          </button>
+          <textarea
+            className="session-notes-input compact-textarea"
+            value={props.attachmentNames}
+            onChange={(event) => props.onSetAttachmentNames(event.target.value)}
+            placeholder="Attachment names, one per line"
+            rows={3}
+            disabled={disabled}
+          />
+          <button onClick={props.onListAttachments} disabled={disabled}>
+            <PackageOpen size={15} />
+            List files
+          </button>
+          <button onClick={props.onExtractAttachments} disabled={disabled}>
+            <FolderOpen size={15} />
+            Extract files
+          </button>
+          <button onClick={props.onRemoveAttachments} disabled={disabled || !props.attachmentNames.trim()}>
+            <Trash2 size={15} />
+            Remove files
+          </button>
         </div>
       </section>
 
@@ -1272,13 +2387,97 @@ function ToolsPane(props: ToolsPaneProps) {
             <MessageSquare size={15} />
             Comment
           </button>
+          <button onClick={props.onAddFreeText} disabled={disabled}>
+            <FileText size={15} />
+            Free text
+          </button>
+          <select
+            value={props.stampKind}
+            onChange={(event) => props.onSetStampKind(event.target.value as StandardStampKind)}
+            disabled={disabled}
+          >
+            {STANDARD_STAMP_KINDS.map((stamp) => (
+              <option value={stamp} key={stamp}>
+                {stamp}
+              </option>
+            ))}
+          </select>
+          <button onClick={props.onAddStamp} disabled={disabled}>
+            <Stamp size={15} />
+            Stamp
+          </button>
+          <select
+            value={props.shapeKind}
+            onChange={(event) => props.onSetShapeKind(event.target.value as ShapeAnnotationKind)}
+            disabled={disabled}
+          >
+            {SHAPE_ANNOTATION_KINDS.map((shape) => (
+              <option value={shape} key={shape}>
+                {shape}
+              </option>
+            ))}
+          </select>
+          <input
+            value={props.shapeDimensions}
+            onChange={(event) => props.onSetShapeDimensions(event.target.value)}
+            placeholder="Shape W,H"
+            disabled={disabled}
+          />
+          <button onClick={props.onAddShape} disabled={disabled}>
+            <Square size={15} />
+            Shape
+          </button>
+          <input
+            value={props.imageFilePath}
+            onChange={(event) => props.onSetImageFilePath(event.target.value)}
+            placeholder="Image file path"
+            disabled={disabled}
+          />
+          <input
+            value={props.imageDimensions}
+            onChange={(event) => props.onSetImageDimensions(event.target.value)}
+            placeholder="Image W,H"
+            disabled={disabled}
+          />
+          <button onClick={props.onAddPdfImage} disabled={disabled}>
+            <ImageIcon size={15} />
+            Image
+          </button>
+          <input
+            value={props.markupText}
+            onChange={(event) => props.onSetMarkupText(event.target.value)}
+            placeholder="Text to mark"
+            disabled={disabled}
+          />
+          <button onClick={() => props.onAddTextMarkup('underline')} disabled={disabled || !props.markupText.trim()}>
+            <Underline size={15} />
+            Underline
+          </button>
+          <button onClick={() => props.onAddTextMarkup('strikeout')} disabled={disabled || !props.markupText.trim()}>
+            <Strikethrough size={15} />
+            Strike
+          </button>
+          <input
+            value={props.redactText}
+            onChange={(event) => props.onSetRedactText(event.target.value)}
+            placeholder="Text to redact"
+            disabled={disabled}
+          />
+          <button onClick={props.onRedactText} disabled={disabled || !props.redactText.trim()}>
+            <Shield size={15} />
+            Redact
+          </button>
         </div>
         <div className="field-hint">
           {props.commentTarget
-            ? `Target P${props.commentTarget.page + 1} · ${Math.round(props.commentTarget.x)},${Math.round(
+            ? `Target for ${pdfPlacementLabel(props.placementMode)} P${props.commentTarget.page + 1} · ${Math.round(
+                props.commentTarget.x,
+              )},${Math.round(
                 props.commentTarget.y,
               )}`
-            : 'Click a page to choose comment position.'}
+            : props.placementMode !== 'none'
+              ? pdfPlacementPrompt(props.placementMode)
+              : 'Click Comment, Free text, Stamp, Shape, or Image first, then choose a PDF position.'}
         </div>
       </section>
 
@@ -1307,13 +2506,31 @@ function ToolsPane(props: ToolsPaneProps) {
             placeholder="Typed signature"
             disabled={disabled}
           />
-          <button onClick={props.onAddTypedSignature} disabled={disabled || !props.commentTarget}>
+          <button onClick={props.onAddTypedSignature} disabled={disabled}>
             <Stamp size={15} />
             Sign here
           </button>
+          <input
+            value={props.signatureImagePath}
+            onChange={(event) => props.onSetSignatureImagePath(event.target.value)}
+            placeholder="Signature image path"
+            disabled={disabled}
+          />
+          <input
+            value={props.signatureImageDimensions}
+            onChange={(event) => props.onSetSignatureImageDimensions(event.target.value)}
+            placeholder="Signature W,H"
+            disabled={disabled}
+          />
+          <button onClick={props.onAddImageSignature} disabled={disabled}>
+            <PenLine size={15} />
+            Image sign
+          </button>
         </div>
         <div className="field-hint">
-          Click a page to choose signature position. Typed signatures are visible FreeText annotations, not certificate signatures.
+          {props.placementMode === 'signature' || props.placementMode === 'image-signature'
+            ? pdfPlacementPrompt(props.placementMode)
+            : 'Click Sign here or Image sign, then choose a PDF position. These are visible signatures, not certificate signatures.'}
         </div>
       </section>
 
@@ -1329,6 +2546,93 @@ function ToolsPane(props: ToolsPaneProps) {
           <button onClick={props.onAddWatermark} disabled={disabled}>
             <Stamp size={15} />
             Watermark
+          </button>
+          <button onClick={props.onCompressPdf} disabled={disabled}>
+            <PackageOpen size={15} />
+            Compress
+          </button>
+          <input
+            value={props.exportImageDpi}
+            onChange={(event) => props.onSetExportImageDpi(event.target.value)}
+            placeholder="PNG DPI"
+            disabled={disabled}
+          />
+          <button onClick={props.onExportImages} disabled={disabled}>
+            <FileText size={15} />
+            PNG
+          </button>
+          <button onClick={props.onExtractImages} disabled={disabled}>
+            <PackageOpen size={15} />
+            Images
+          </button>
+          <select
+            value={props.exportTextFormat}
+            onChange={(event) => props.onSetExportTextFormat(event.target.value as TextExportFormat)}
+            disabled={disabled}
+          >
+            {TEXT_EXPORT_FORMATS.map((format) => (
+              <option value={format} key={format}>
+                {format === 'markdown' ? 'Markdown' : 'TXT'}
+              </option>
+            ))}
+          </select>
+          <button onClick={props.onExportText} disabled={disabled}>
+            <FileText size={15} />
+            Text
+          </button>
+          <textarea
+            className="session-notes-input compact-textarea"
+            value={props.conversionImagePaths}
+            onChange={(event) => props.onSetConversionImagePaths(event.target.value)}
+            placeholder="Image paths, one per line"
+            rows={3}
+            disabled={conversionDisabled}
+          />
+          <input
+            value={props.conversionMarkupTitle}
+            onChange={(event) => props.onSetConversionMarkupTitle(event.target.value)}
+            placeholder="Converted PDF title"
+            disabled={conversionDisabled}
+          />
+          <input
+            value={props.conversionPageSize}
+            onChange={(event) => props.onSetConversionPageSize(event.target.value)}
+            placeholder="PDF size: 595, 842"
+            disabled={conversionDisabled}
+          />
+          <input
+            value={props.conversionMargin}
+            onChange={(event) => props.onSetConversionMargin(event.target.value)}
+            placeholder="Margin"
+            disabled={conversionDisabled}
+          />
+          <button onClick={props.onConvertImagesToPdf} disabled={conversionDisabled || !props.conversionImagePaths.trim()}>
+            <FileText size={15} />
+            Images to PDF
+          </button>
+          <textarea
+            className="session-notes-input compact-textarea"
+            value={props.conversionHtml}
+            onChange={(event) => props.onSetConversionHtml(event.target.value)}
+            placeholder="HTML to convert"
+            rows={4}
+            disabled={conversionDisabled}
+          />
+          <button onClick={props.onConvertHtmlToPdf} disabled={conversionDisabled || !props.conversionHtml.trim()}>
+            <FileText size={15} />
+            HTML to PDF
+          </button>
+          <textarea
+            className="session-notes-input compact-textarea"
+            value={props.conversionMarkdown}
+            onChange={(event) => props.onSetConversionMarkdown(event.target.value)}
+            placeholder="Markdown to convert"
+            rows={4}
+            disabled={conversionDisabled}
+          />
+          <button onClick={props.onConvertMarkdownToPdf} disabled={conversionDisabled || !props.conversionMarkdown.trim()}>
+            <FileText size={15} />
+            Markdown to PDF
           </button>
           <input
             value={props.encryptPassword}
@@ -1382,11 +2686,11 @@ function ToolsPane(props: ToolsPaneProps) {
       <section className="native-core-note">
         <div className="section-title">Native Core</div>
         <p>{props.nativeCoreStatus ? nativePdfCoreStatusSummary(props.nativeCoreStatus) : 'Checking PDF core...'}</p>
-        {props.nativeCoreStatus?.mode !== 'pdf4qt-ready' && (
-          <p className="native-core-secondary">
-            Current runtime stays on pdf.js/PyMuPDF until the PDF4QT host bridge is available.
-          </p>
-        )}
+        <p className="native-core-secondary">
+          {props.nativeCoreStatus?.mode === 'pdf4qt-ready'
+            ? 'PDF4QT is active for supported native commands; page viewing still uses pdf.js.'
+            : 'Current runtime stays on pdf.js/PyMuPDF until the PDF4QT host bridge is available.'}
+        </p>
       </section>
     </div>
   );
@@ -1478,7 +2782,7 @@ function PrivacyPane({ mode, aiAllowed, activeDocument, busy, onModeChange, onEn
           Enable AI for this PDF
         </button>
         <button className="secondary-button" onClick={onAnalyze} disabled={!activeDocument || busy}>
-          Analyze document now
+          Re-analyze document
         </button>
       </section>
     </div>

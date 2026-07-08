@@ -37,6 +37,16 @@ export function createBrowserPreviewElectronApi(): ElectronAPI {
     setAgentKind: async (kind) => {
       agentKind = kind;
     },
+    getAgentCatalog: async (kind) => ({
+      models: [],
+      modes: [
+        { id: 'ask', name: 'Ask' },
+        { id: 'plan', name: 'Plan' },
+        { id: 'edit', name: 'Edit' },
+        { id: 'review', name: 'Review' },
+      ],
+      unavailableReason: `${kind} model list is only available in Electron mode.`,
+    }),
     sendAgentPrompt: (_prompt, turnId) => {
       queueMicrotask(() => {
         emit({

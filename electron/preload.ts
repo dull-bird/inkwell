@@ -1,28 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AgentEvent, AgentKind, AgentPromptOptions } from './agent.js';
+import type { AgentCatalog, AgentEvent, AgentKind, AgentPromptOptions } from './agent.js';
+import type { NativePdfCommandName } from '../shared/native-pdf-commands';
 
 export type { AgentEvent, AgentKind, AgentPromptOptions };
 
 type PdfSessionExportMode = 'none' | 'reference' | 'copy';
 type NativePdfCoreMode = 'pdfjs-fallback' | 'pdf4qt-missing' | 'pdf4qt-ready';
-type NativePdfCommandName =
-  | 'open_document'
-  | 'host_status'
-  | 'document_info'
-  | 'find_text'
-  | 'preview_highlights'
-  | 'read_form_fields'
-  | 'fill_form'
-  | 'typed_signature'
-  | 'apply_operations'
-  | 'undo'
-  | 'redo'
-  | 'save_as';
-
 interface NativePdfCoreStatus {
   mode: NativePdfCoreMode;
-  renderer: 'pdf.js' | 'PDF4QT';
-  writeEngine: 'PyMuPDF' | 'PDF4QT command bridge';
+  renderer: 'pdf.js';
+  writeEngine: 'PyMuPDF';
   pdf4qt: {
     available: boolean;
     envVar: 'INKWELL_PDF4QT_HOST';
@@ -63,6 +50,7 @@ export interface ElectronAPI {
   ) => Promise<NativeAgentSessionExportResult>;
   getAgentKind: () => Promise<AgentKind>;
   setAgentKind: (kind: AgentKind) => Promise<void>;
+  getAgentCatalog: (kind: AgentKind) => Promise<AgentCatalog>;
   sendAgentPrompt: (prompt: string, turnId: string, options?: AgentPromptOptions) => void;
   stopAgentPrompt: (turnId: string) => void;
   onAgentEvent: (callback: (event: AgentEvent & { turnId?: string }) => void) => () => void;
@@ -80,6 +68,7 @@ const api: ElectronAPI = {
   exportNativeAgentSession: (request) => ipcRenderer.invoke('session:exportNativeAgent', request),
   getAgentKind: () => ipcRenderer.invoke('agent:getKind'),
   setAgentKind: (kind) => ipcRenderer.invoke('agent:setKind', kind),
+  getAgentCatalog: (kind) => ipcRenderer.invoke('agent:getCatalog', kind),
   sendAgentPrompt: (prompt, turnId, options) => ipcRenderer.send('agent:prompt', prompt, turnId, options),
   stopAgentPrompt: (turnId) => ipcRenderer.send('agent:stop', turnId),
   onAgentEvent: (callback) => {

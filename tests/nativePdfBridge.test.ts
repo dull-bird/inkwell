@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import {
   NATIVE_PDF_COMMANDS,
@@ -52,6 +54,12 @@ test('builds JSON-RPC native PDF host requests', () => {
 
 test('keeps Electron bridge command list aligned with shared protocol', () => {
   assert.deepEqual(ELECTRON_NATIVE_PDF_COMMANDS, NATIVE_PDF_COMMANDS.map((command) => command.name));
+});
+
+test('uses the shared native PDF command protocol instead of duplicating it', () => {
+  const source = readFileSync(resolve('electron/nativePdfBridge.ts'), 'utf8');
+  assert.match(source, /from '\.\.\/shared\/native-pdf-commands'/);
+  assert.doesNotMatch(source, /export type NativePdfCommandName\s*=/);
 });
 
 test('sends command to host and resolves matching chunked JSON response', async () => {

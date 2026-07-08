@@ -4,8 +4,8 @@ export type NativePdfCoreMode = 'pdfjs-fallback' | 'pdf4qt-missing' | 'pdf4qt-re
 
 export interface NativePdfCoreStatus {
   mode: NativePdfCoreMode;
-  renderer: 'pdf.js' | 'PDF4QT';
-  writeEngine: 'PyMuPDF' | 'PDF4QT command bridge';
+  renderer: 'pdf.js';
+  writeEngine: 'PyMuPDF';
   pdf4qt: {
     available: boolean;
     envVar: typeof PDF4QT_HOST_ENV;
@@ -26,14 +26,14 @@ export function resolveNativePdfCoreStatus({
   if (hostPath && hostExists) {
     return {
       mode: 'pdf4qt-ready',
-      renderer: 'PDF4QT',
-      writeEngine: 'PDF4QT command bridge',
+      renderer: 'pdf.js',
+      writeEngine: 'PyMuPDF',
       pdf4qt: {
         available: true,
         envVar: PDF4QT_HOST_ENV,
         hostPath,
       },
-      message: 'PDF4QT native core ready.',
+      message: 'PDF4QT native command bridge ready.',
     };
   }
 
@@ -64,5 +64,6 @@ export function resolveNativePdfCoreStatus({
 }
 
 export function nativePdfCoreStatusSummary(status: NativePdfCoreStatus): string {
-  return `${status.message} Renderer: ${status.renderer}. PDF writes: ${status.writeEngine}.`;
+  const nativeCore = status.pdf4qt.available ? 'PDF4QT' : 'not active';
+  return `${status.message} Viewer: ${status.renderer}. PDF writes: ${status.writeEngine}. Native core: ${nativeCore}.`;
 }

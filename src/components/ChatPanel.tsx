@@ -1,11 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ChevronRight, Send, Shield, Sparkles, Square } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { AgentEvent, AgentKind, AgentReasoningLevel } from '../../shared/agent-types';
+import type { AgentCatalog, AgentEvent, AgentKind, AgentReasoningLevel } from '../../shared/agent-types';
 import { AGENT_INFO } from '../../shared/agent-types';
 import {
   buildAgentPromptOptions,
+  describeCatalogModelId,
+  groupCatalogModels,
+  reasoningOptionsForModel,
+  resolveCatalogModelSelection,
   type AgentModeSelection,
   type AgentModelSelection,
 } from '../agentControls';
@@ -50,12 +54,15 @@ interface ChatPanelProps {
   workspaceDocuments: WorkspaceDocumentContext[];
   aiEnabled: boolean;
   privacyMode: AiPermissionMode;
+  onPrivacyModeChange: (mode: AiPermissionMode) => void;
   externalPrompt: PendingAgentPrompt | null;
   onExternalPromptConsumed: (id: string) => void;
   onEnableAi: () => void;
   onAnalyzeDocument: () => void;
   onFileOutput: (path: string) => void;
   onSplitOutput: (outputDir: string, fileCount: number) => void;
+  onFolderOutput: (outputDir: string, label: string, fileCount: number) => void;
+  onPathOutput: (path: string, label: string) => void;
   onPreviewHighlights: (operations: HighlightOperation[]) => void;
   onTranscriptChange?: (messages: ChatTranscriptMessage[]) => void;
 }
@@ -63,20 +70,13 @@ interface ChatPanelProps {
 type AgentStreamEvent = AgentEvent & { turnId?: string };
 
 const AGENT_KINDS: AgentKind[] = ['claude', 'codex', 'kimi'];
-const MODE_OPTIONS: Array<{ value: AgentModeSelection; label: string }> = [
+const FALLBACK_MODE_OPTIONS: Array<{ value: AgentModeSelection; label: string }> = [
   { value: 'default', label: 'Agent default' },
   { value: 'ask', label: 'Ask' },
   { value: 'plan', label: 'Plan' },
   { value: 'edit', label: 'Edit' },
   { value: 'review', label: 'Review' },
 ];
-const REASONING_OPTIONS: Array<{ value: AgentReasoningLevel; label: string }> = [
-  { value: 'auto', label: 'Auto' },
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High' },
-];
-
 function newId(): string {
   return crypto.randomUUID();
 }
@@ -124,12 +124,15 @@ export default function ChatPanel({
   workspaceDocuments,
   aiEnabled,
   privacyMode,
+  onPrivacyModeChange,
   externalPrompt,
   onExternalPromptConsumed,
   onEnableAi,
   onAnalyzeDocument,
   onFileOutput,
   onSplitOutput,
+  onFolderOutput,
+  onPathOutput,
   onPreviewHighlights,
   onTranscriptChange,
 }: ChatPanelProps) {
@@ -144,6 +147,8 @@ export default function ChatPanel({
   const [modeSelection, setModeSelection] = useState<AgentModeSelection>('default');
   const [reasoningLevel, setReasoningLevel] = useState<AgentReasoningLevel>('auto');
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const [agentCatalog, setAgentCatalog] = useState<AgentCatalog | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(false);
 
   const agentKindRef = useRef(agentKind);
   const activeTurnIdRef = useRef<string | null>(null);
@@ -154,6 +159,12 @@ export default function ChatPanel({
 
   const canChat = aiEnabled && Boolean(activeDocumentTitle);
   const messages = messagesByAgent[agentKind];
+  const catalogModels = agentCatalog?.models ?? [];
+  const groupedModelOptions = useMemo(() => groupCatalogModels(catalogModels), [catalogModels]);
+  const reasoningOptions = useMemo(
+    () => reasoningOptionsForModel(modelSelection, catalogModels),
+    [catalogModels, modelSelection],
+  );
 
   useEffect(() => {
     void window.electronAPI.getAgentKind().then(setAgentKindState);
@@ -162,7 +173,61 @@ export default function ChatPanel({
   useEffect(() => {
     agentKindRef.current = agentKind;
     stickToBottomRef.current = true;
+    setModelSelection((current) => (current.startsWith('catalog:') ? 'default' : current));
+    setModeSelection('default');
   }, [agentKind]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setAgentCatalog(null);
+    setCatalogLoading(true);
+    void window.electronAPI
+      .getAgentCatalog(agentKind)
+      .then((catalog) => {
+        if (!cancelled) setAgentCatalog(catalog);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setAgentCatalog({
+            models: [],
+            modes: [],
+            unavailableReason: error instanceof Error ? error.message : String(error),
+          });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setCatalogLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentKind]);
+
+  useEffect(() => {
+    if (!agentCatalog?.modes.length || modeSelection === 'default') return;
+    if (!agentCatalog.modes.some((mode) => mode.id === modeSelection)) {
+      setModeSelection('default');
+    }
+  }, [agentCatalog, modeSelection]);
+
+  useEffect(() => {
+    if (!agentCatalog || modelSelection === 'default' || modelSelection === 'custom') return;
+    if (modelSelection.startsWith('catalog:')) {
+      const modelId = modelSelection.slice('catalog:'.length);
+      if (!agentCatalog.models.some((model) => model.id === modelId)) setModelSelection('default');
+      return;
+    }
+    if (modelSelection.startsWith('catalog-base:')) {
+      const baseId = modelSelection.slice('catalog-base:'.length);
+      if (!groupedModelOptions.some((model) => model.baseId === baseId)) setModelSelection('default');
+    }
+  }, [agentCatalog, groupedModelOptions, modelSelection]);
+
+  useEffect(() => {
+    if (!reasoningOptions.some((option) => option.value === reasoningLevel)) {
+      setReasoningLevel('auto');
+    }
+  }, [reasoningLevel, reasoningOptions]);
 
   useEffect(() => {
     onTranscriptChange?.(messages.map(messageToTranscript));
@@ -268,6 +333,8 @@ export default function ChatPanel({
         const action = derivePdfToolAction(event.toolName, event.result);
         if (action?.kind === 'preview-highlights') onPreviewHighlights(action.operations);
         if (action?.kind === 'split-output') onSplitOutput(action.outputDir, action.fileCount);
+        if (action?.kind === 'folder-output') onFolderOutput(action.outputDir, action.label, action.fileCount);
+        if (action?.kind === 'path-output') onPathOutput(action.path, action.label);
         if (action?.kind === 'file-output') onFileOutput(action.path);
         return;
       }
@@ -299,7 +366,7 @@ export default function ChatPanel({
       }
     });
     return unsubscribe;
-  }, [finishTurn, onFileOutput, onPreviewHighlights, onSplitOutput, patchTurn, updateMessages]);
+  }, [finishTurn, onFileOutput, onFolderOutput, onPathOutput, onPreviewHighlights, onSplitOutput, patchTurn, updateMessages]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -320,7 +387,7 @@ export default function ChatPanel({
   };
 
   const switchAgent = async (kind: AgentKind) => {
-    if (kind === agentKind || busy || !aiEnabled) return;
+    if (kind === agentKind || busy) return;
     stickToBottomRef.current = true;
     setAgentKindState(kind);
     await window.electronAPI.setAgentKind(kind);
@@ -344,7 +411,13 @@ export default function ChatPanel({
 
       const userMsg = prompt.trim();
       const replyId = newId();
-      const options = buildAgentPromptOptions(modelSelection, customModelId, modeSelection, reasoningLevel);
+      const resolvedModelSelection = resolveCatalogModelSelection(
+        modelSelection,
+        reasoningLevel,
+        catalogModels,
+        agentCatalog?.currentModelId,
+      );
+      const options = buildAgentPromptOptions(resolvedModelSelection, customModelId, modeSelection, reasoningLevel);
 
       stickToBottomRef.current = true;
       turnAgentByIdRef.current[replyId] = agentKind;
@@ -361,8 +434,10 @@ export default function ChatPanel({
     },
     [
       agentKind,
+      agentCatalog?.currentModelId,
       busy,
       canChat,
+      catalogModels,
       customModelId,
       modeSelection,
       modelSelection,
@@ -418,6 +493,32 @@ export default function ChatPanel({
       : 'Ask about the current PDF...'
     : 'Enable AI for this PDF to chat';
   const composerControls = getComposerControlState({ canChat, busy, activeTurnId, input });
+  const modeOptions: Array<{ value: AgentModeSelection; label: string }> = agentCatalog?.modes.length
+    ? [
+        {
+          value: 'default',
+          label: `Agent default${agentCatalog.currentModeId ? ` (${agentCatalog.currentModeId})` : ''}`,
+        },
+        ...agentCatalog.modes.map((mode) => ({ value: mode.id, label: mode.name })),
+      ]
+    : FALLBACK_MODE_OPTIONS;
+  const currentModelLabel =
+    agentCatalog?.currentModelId && agentCatalog.models.length
+      ? describeCatalogModelId(agentCatalog.currentModelId, agentCatalog.models)
+      : agentCatalog?.currentModelId;
+  const catalogHint = catalogLoading
+    ? 'Loading ACP catalog...'
+    : agentCatalog?.unavailableReason
+      ? `ACP catalog unavailable: ${agentCatalog.unavailableReason}`
+      : agentCatalog && agentCatalog.models.length === 0 && agentCatalog.modes.length === 0
+        ? 'This agent did not advertise models or modes.'
+        : agentCatalog?.models.length === 0
+          ? 'This agent did not advertise a model list.'
+          : agentCatalog && groupedModelOptions.some((model) => model.grouped)
+            ? `ACP catalog: ${agentCatalog.models.length} variants grouped into ${groupedModelOptions.length} models.`
+            : agentCatalog
+              ? `ACP catalog: ${agentCatalog.models.length} models.`
+          : null;
 
   return (
     <aside className="sparrow-agent-panel">
@@ -431,7 +532,7 @@ export default function ChatPanel({
         </div>
         <label className="agent-select">
           <AgentLogo kind={agentKind} size={16} />
-          <select value={agentKind} disabled={busy || !aiEnabled} onChange={(event) => switchAgent(event.target.value as AgentKind)}>
+          <select value={agentKind} disabled={busy} onChange={(event) => switchAgent(event.target.value as AgentKind)}>
             {AGENT_KINDS.map((kind) => (
               <option key={kind} value={kind}>
                 {AGENT_INFO[kind].label}
@@ -446,21 +547,34 @@ export default function ChatPanel({
           <span>Model</span>
           <select
             value={modelSelection}
-            disabled={busy || !aiEnabled}
+            disabled={busy}
             onChange={(event) => setModelSelection(event.target.value as AgentModelSelection)}
           >
-            <option value="default">Agent default</option>
-            <option value="custom">Custom model</option>
+            <option value="default">
+              Agent default{currentModelLabel ? ` (${currentModelLabel})` : ''}
+            </option>
+            {groupedModelOptions.length > 0 && (
+              <optgroup label="ACP models">
+                {groupedModelOptions.map((model) => (
+                  <option key={model.value} value={model.value}>
+                    {model.label}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            <optgroup label="Manual">
+              <option value="custom">Custom model</option>
+            </optgroup>
           </select>
         </label>
         <label>
           <span>Mode</span>
           <select
             value={modeSelection}
-            disabled={busy || !aiEnabled}
+            disabled={busy}
             onChange={(event) => setModeSelection(event.target.value as AgentModeSelection)}
           >
-            {MODE_OPTIONS.map((option) => (
+            {modeOptions.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
               </option>
@@ -471,10 +585,10 @@ export default function ChatPanel({
           <span>Think</span>
           <select
             value={reasoningLevel}
-            disabled={busy || !aiEnabled}
+            disabled={busy}
             onChange={(event) => setReasoningLevel(event.target.value as AgentReasoningLevel)}
           >
-            {REASONING_OPTIONS.map((option) => (
+            {reasoningOptions.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
               </option>
@@ -487,9 +601,10 @@ export default function ChatPanel({
             value={customModelId}
             onChange={(event) => setCustomModelId(event.target.value)}
             placeholder="model id"
-            disabled={busy || !aiEnabled}
+            disabled={busy}
           />
         )}
+        {catalogHint && <div className="agent-catalog-hint">{catalogHint}</div>}
       </section>
 
       <section className={`assistant-card privacy-card ${aiEnabled ? 'enabled' : ''}`}>
@@ -497,6 +612,14 @@ export default function ChatPanel({
         <div className="privacy-card-row">
           <Shield size={16} />
           <span>{aiEnabled ? `Enabled · ${privacyMode}` : `Off · ${privacyMode}`}</span>
+        </div>
+        <div className="permission-options compact">
+          <button className={privacyMode === 'manual' ? 'active' : ''} onClick={() => onPrivacyModeChange('manual')}>
+            Ask per PDF
+          </button>
+          <button className={privacyMode === 'always' ? 'active' : ''} onClick={() => onPrivacyModeChange('always')}>
+            Always on
+          </button>
         </div>
         {!aiEnabled && (
           <button className="workspace-action" onClick={onEnableAi} disabled={!activeDocumentTitle}>
@@ -524,11 +647,11 @@ export default function ChatPanel({
             <div className="analysis-summary">
               {analysisStatus === 'analyzing'
                 ? '正在本地抽取文本并分析文档类型。'
-                : '未分析。点击 Analyze 后才会读取 PDF 文本。'}
+                : '本地文档感知会在打开 PDF 后自动运行，也可以手动重新分析。'}
             </div>
             <button className="workspace-action" onClick={onAnalyzeDocument} disabled={!activeDocumentTitle || busy}>
               <Sparkles size={14} />
-              Analyze
+              Re-analyze
             </button>
           </>
         )}
