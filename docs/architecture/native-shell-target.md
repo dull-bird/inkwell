@@ -62,7 +62,7 @@ and `PDFDocument` catalog: path, title, and page count come from the native PDF
 surface, not a React/PDF.js shadow model.
 
 `previewOperationsJson()` supports `highlight`, `underline`, and `strikeout`
-text markup operations and `freeText`, `stamp`, and `shape` standard
+text markup operations and `comment`, `freeText`, `stamp`, and `shape` standard
 annotation operations by creating PDF4QT annotations through
 `PDFDocumentModifier` and `PDFDocumentBuilder`, then handing the modified
 document back through `PDFProgramController::onDocumentModified()` so the normal

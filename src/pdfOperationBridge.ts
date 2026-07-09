@@ -84,6 +84,16 @@ export type NativeTextMarkupKind = 'highlight' | 'underline' | 'strikeout';
 
 export type NativeAnnotationOperation =
   | {
+      type: 'comment';
+      page: number;
+      x: number;
+      y: number;
+      text: string;
+      author?: string;
+      width?: number;
+      height?: number;
+    }
+  | {
       type: 'freeText';
       page: number;
       x: number;

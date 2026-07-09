@@ -113,10 +113,11 @@ test('previews text query markup through Qt PDF operation bridge', async () => {
   assert.deepEqual(batch.operations[0].color, [0.1, 0.45, 0.95]);
 });
 
-test('previews free text stamp and shape annotations through Qt PDF operation bridge', async () => {
+test('previews comment free text stamp and shape annotations through Qt PDF operation bridge', async () => {
   const calls: string[] = [];
   const result = await previewAnnotationOperationsWithNativeBridge(
     [
+      { type: 'comment', page: 0, x: 64, y: 120, text: 'Please confirm', author: 'Reviewer' },
       { type: 'freeText', page: 0, x: 72, y: 144, text: 'Needs review', author: 'Reviewer' },
       { type: 'stamp', page: 0, x: 120, y: 180, stamp: 'Approved', author: 'Reviewer' },
       {
@@ -138,25 +139,27 @@ test('previews free text stamp and shape annotations through Qt PDF operation br
       getBridge: async () => ({
         previewOperationsJson: async (batchJson) => {
           calls.push(batchJson);
-          return JSON.stringify({ ok: true, batchId: 'b5', operationCount: 3, rectCount: 0 });
+          return JSON.stringify({ ok: true, batchId: 'b5', operationCount: 4, rectCount: 0 });
         },
       }),
     },
   );
 
-  assert.deepEqual(result, { handled: true, operationCount: 3, rectCount: 0, batchId: 'b5' });
+  assert.deepEqual(result, { handled: true, operationCount: 4, rectCount: 0, batchId: 'b5' });
   assert.equal(calls.length, 1);
 
   const batch = JSON.parse(calls[0]);
   assert.equal(batch.documentId, '/tmp/paper.pdf');
   assert.equal(batch.label, 'Manual annotations');
-  assert.equal(batch.operations[0].type, 'freeText');
-  assert.equal(batch.operations[0].text, 'Needs review');
-  assert.equal(batch.operations[1].type, 'stamp');
-  assert.equal(batch.operations[1].stamp, 'Approved');
-  assert.equal(batch.operations[2].type, 'shape');
-  assert.equal(batch.operations[2].kind, 'rectangle');
-  assert.equal(batch.operations[2].strokeWidth, 2);
+  assert.equal(batch.operations[0].type, 'comment');
+  assert.equal(batch.operations[0].text, 'Please confirm');
+  assert.equal(batch.operations[1].type, 'freeText');
+  assert.equal(batch.operations[1].text, 'Needs review');
+  assert.equal(batch.operations[2].type, 'stamp');
+  assert.equal(batch.operations[2].stamp, 'Approved');
+  assert.equal(batch.operations[3].type, 'shape');
+  assert.equal(batch.operations[3].kind, 'rectangle');
+  assert.equal(batch.operations[3].strokeWidth, 2);
 });
 
 test('falls back when Qt PDF operation bridge is unavailable', async () => {
@@ -341,10 +344,12 @@ test('App routes manual text markup through native query preview before backend 
 
 test('App routes manual annotations through native preview before backend output fallback', () => {
   const appSource = readFileSync(resolve('src/App.tsx'), 'utf8');
+  const addCommentSource = sourceBlock(appSource, 'const addComment = useCallback', 'const addFreeText = useCallback');
   const addFreeTextSource = sourceBlock(appSource, 'const addFreeText = useCallback', 'const addStamp = useCallback');
   const addStampSource = sourceBlock(appSource, 'const addStamp = useCallback', 'const addShape = useCallback');
   const addShapeSource = sourceBlock(appSource, 'const addShape = useCallback', 'const addPdfImage = useCallback');
 
+  assertManualAnnotationNativeFirst(addCommentSource, "'/comment'");
   assertManualAnnotationNativeFirst(addFreeTextSource, "'/free-text'");
   assertManualAnnotationNativeFirst(addStampSource, "'/stamp'");
   assertManualAnnotationNativeFirst(addShapeSource, "'/shape'");

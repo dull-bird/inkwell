@@ -47,14 +47,14 @@ The Qt shell exposes an in-process bridge object to the optional agent WebView:
 - transport: Qt WebChannel
 - implemented now: `getCurrentDocumentJson()`, `previewOperationsJson()` for
 `highlight`, `underline`, and `strikeout` text markup operations plus
-`freeText`, `stamp`, and `shape` standard annotation operations,
+`comment`, `freeText`, `stamp`, and `shape` standard annotation operations,
 `clearPreviewJson()`, `applyOperationsJson()`, `undoJson()`, and `redoJson()`
 
 `getCurrentDocumentJson()` reads from `PDFProgramController::getDocument()` and
 the document catalog page count. Text markup preview creates standard PDF4QT
 Highlight, Underline, or StrikeOut annotations through `PDFDocumentModifier`
-and `PDFDocumentBuilder`; standard annotation preview creates FreeText, Stamp,
-Square, Circle, or Line annotations through the same modifier path. The bridge
+and `PDFDocumentBuilder`; standard annotation preview creates Text Comment,
+FreeText, Stamp, Square, Circle, or Line annotations through the same modifier path. The bridge
 then hands the modified document back through
 `PDFProgramController::onDocumentModified()`. Text markup preview can provide
 explicit rects or a text `query`; query operations are resolved inside the
@@ -90,7 +90,7 @@ render the old PDF viewer/handoff page. It renders side-panel controls plus
 title, path, and page count from the live PDF4QT document.
 
 Agent text markup tool results, manual underline/strikeout query previews, and
-manual free text/stamp/shape annotation previews go to `previewOperationsJson()`.
+manual comment/free text/stamp/shape annotation previews go to `previewOperationsJson()`.
 Clear, apply, undo, and redo controls go through
 the same bridge methods. If no Qt WebChannel transport exists, the Electron
 migration prototype can still fall back to its legacy React highlight preview

@@ -50,6 +50,8 @@ test('scaffolds Qt shell with PDF4QT editor as primary surface', () => {
   assert.match(bridgeSource, /PDFTextFlow::createTextFlows/);
   assert.match(bridgeSource, /flow\.find\(query/);
   assert.match(bridgeSource, /operation\.value\(QStringLiteral\("query"\)\)/);
+  assert.match(bridgeSource, /createAnnotationText/);
+  assert.match(bridgeSource, /TextAnnotationIcon::Comment/);
   assert.match(bridgeSource, /createAnnotationFreeText/);
   assert.match(bridgeSource, /createAnnotationStamp/);
   assert.match(bridgeSource, /createAnnotationSquare/);

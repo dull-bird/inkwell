@@ -866,14 +866,37 @@ export default function App() {
     setBusy(true);
     const documentId = activeDocument.id;
     try {
-      const result = await backendPost<FileOutputResponse>('/comment', {
+      const request = {
         path: activeDocument.path,
         page: commentTarget.page,
         x: commentTarget.x,
         y: commentTarget.y,
         text,
         author: 'Sparrow',
-      });
+      };
+      const nativePreview = await previewAnnotationOperationsWithNativeBridge(
+        [
+          {
+            type: 'comment',
+            page: request.page,
+            x: request.x,
+            y: request.y,
+            text: request.text,
+            author: request.author,
+          },
+        ],
+        {
+          documentId: activeDocument.path,
+          label: `Comment "${request.text}" in ${activeDocument.title}`,
+        },
+      );
+      if (nativePreview.handled) {
+        recordNativePreview(documentId, nativePreview, nativePreview.operationCount ?? 1);
+        clearPlacementTarget(documentId);
+        setStatus('已在 PDF4QT 中预览批注，可撤回或应用保存。');
+        return;
+      }
+      const result = await backendPost<FileOutputResponse>('/comment', request);
       setAgentOutput(result.output);
       await loadPdf(result.output);
       clearPlacementTarget(documentId);
@@ -883,7 +906,17 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [activeDocument, backendPost, beginPlacement, clearPlacementTarget, commentTarget, commentText, loadPdf, placementMode]);
+  }, [
+    activeDocument,
+    backendPost,
+    beginPlacement,
+    clearPlacementTarget,
+    commentTarget,
+    commentText,
+    loadPdf,
+    placementMode,
+    recordNativePreview,
+  ]);
 
   const addFreeText = useCallback(async () => {
     if (!activeDocument) {

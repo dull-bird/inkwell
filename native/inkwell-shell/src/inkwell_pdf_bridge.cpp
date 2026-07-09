@@ -117,7 +117,8 @@ bool isSupportedTextMarkupType(const QString& type)
 
 bool isSupportedAnnotationOperationType(const QString& type)
 {
-    return type == QStringLiteral("freeText")
+    return type == QStringLiteral("comment")
+        || type == QStringLiteral("freeText")
         || type == QStringLiteral("stamp")
         || type == QStringLiteral("shape");
 }
@@ -311,6 +312,31 @@ std::optional<CreatedAnnotation> createStandardAnnotation(
     const pdf::PDFObjectReference page = pageObject->getPageReference();
     const QString author = operation.value(QStringLiteral("author")).toString(QStringLiteral("Inkwell")).trimmed();
     const QString title = author.isEmpty() ? QStringLiteral("Inkwell") : author;
+
+    if (type == QStringLiteral("comment")) {
+        const QString text = operation.value(QStringLiteral("text")).toString().trimmed();
+        if (text.isEmpty()) {
+            *errorMessage = QStringLiteral("Comment annotation must include text.");
+            return std::nullopt;
+        }
+        const std::optional<QRectF> rect = readPositionRectangle(operation, 24.0, 24.0);
+        if (!rect) {
+            *errorMessage = QStringLiteral("Comment annotation must include numeric x and y values.");
+            return std::nullopt;
+        }
+        return CreatedAnnotation{
+            page,
+            builder->createAnnotationText(
+                page,
+                *rect,
+                pdf::TextAnnotationIcon::Comment,
+                title,
+                QStringLiteral("Comment"),
+                text,
+                false
+            ),
+        };
+    }
 
     if (type == QStringLiteral("freeText")) {
         const QString text = operation.value(QStringLiteral("text")).toString().trimmed();
