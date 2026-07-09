@@ -56,6 +56,12 @@ test('scaffolds Qt shell with PDF4QT editor as primary surface', () => {
   assert.match(bridgeSource, /type == QStringLiteral\("watermark"\)/);
   assert.match(bridgeSource, /createWatermarkAnnotations/);
   assert.match(bridgeSource, /getMediaBox\(\)/);
+  assert.match(bridgeSource, /type == QStringLiteral\("redact"\)/);
+  assert.match(bridgeSource, /createAnnotationRedact/);
+  assert.match(bridgeSource, /PDFRedact/);
+  assert.match(bridgeSource, /perform\(pdf::PDFRedact::Options/);
+  assert.match(bridgeSource, /siblingRedactedPath/);
+  assert.match(bridgeSource, /QStringLiteral\("redacted"\)/);
   assert.match(bridgeSource, /createAnnotationStamp/);
   assert.match(bridgeSource, /imageStamp/);
   assert.match(bridgeSource, /QImage/);
@@ -73,7 +79,8 @@ test('scaffolds Qt shell with PDF4QT editor as primary surface', () => {
   assert.match(bridgeSource, /undoManager->doUndo\(\)/);
   assert.match(bridgeSource, /undoManager->doRedo\(\)/);
   assert.match(bridgeSource, /PDFDocumentWriter writer/);
-  assert.match(bridgeSource, /_applied\.pdf/);
+  assert.match(bridgeSource, /siblingAppliedPath/);
+  assert.match(bridgeSource, /QStringLiteral\("applied"\)/);
   assert.match(bridgeSource, /writer\.write\(outputPath, document, true\)/);
   assert.match(bridgeSource, /PreviewAnnotationRef/);
   assert.match(bridgeSource, /activePreviewBatches/);

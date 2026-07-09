@@ -1242,19 +1242,35 @@ export default function App() {
     if (!activeDocument) {
       setStatus('Open a PDF first.');
       return;
+  }
+  setBusy(true);
+  const documentId = activeDocument.id;
+  try {
+    let pageIndices: number[] | undefined;
+    if (pageEditRanges.trim()) {
+      if (!activeDocument.pageCount) throw new Error('Page count is not ready yet.');
+      const pageRanges = parsePageRanges(pageEditRanges);
+      pageIndices = pageRanges ? expandPageRanges(activeDocument.pageCount, pageRanges) : undefined;
     }
-    setBusy(true);
-    try {
-      let pageIndices: number[] | undefined;
-      if (pageEditRanges.trim()) {
-        if (!activeDocument.pageCount) throw new Error('Page count is not ready yet.');
-        const pageRanges = parsePageRanges(pageEditRanges);
-        pageIndices = pageRanges ? expandPageRanges(activeDocument.pageCount, pageRanges) : undefined;
-      }
-      const result = await backendPost<RedactResponse>(
-        '/redact',
-        buildRedactRequest(activeDocument.path, redactText, pageIndices),
-      );
+    const request = buildRedactRequest(activeDocument.path, redactText, pageIndices);
+    const nativePreview = await previewAnnotationOperationsWithNativeBridge(
+      [{ type: 'redact', query: request.query, pageIndices: request.page_indices, author: 'Sparrow' }],
+      {
+        documentId: activeDocument.path,
+        label: `Redact "${request.query}" in ${activeDocument.title}`,
+      },
+    );
+    if (nativePreview.handled) {
+      recordNativePreview(documentId, nativePreview, nativePreview.operationCount ?? 1);
+      const pages = pageIndices?.length ? `，限定 ${pageIndices.length} 页` : '';
+      setStatus(`已在 PDF4QT 中标记涂黑区域${pages}，应用保存时将生成真正移除内容的 PDF。`);
+      return;
+    }
+
+    const result = await backendPost<RedactResponse>(
+      '/redact',
+      request,
+    );
       setAgentOutput(result.output);
       await loadPdf(result.output);
       const pages = result.pages.length ? `，涉及 ${result.pages.length} 页` : '';
@@ -1264,7 +1280,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [activeDocument, backendPost, loadPdf, pageEditRanges, redactText]);
+}, [activeDocument, backendPost, loadPdf, pageEditRanges, recordNativePreview, redactText]);
 
   const splitPdf = useCallback(async () => {
     if (!activeDocument) {

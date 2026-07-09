@@ -204,6 +204,34 @@ test('previews document watermark through Qt PDF operation bridge', async () => 
   assert.equal(batch.operations[0].source, 'user');
 });
 
+test('previews text redaction marks through Qt PDF operation bridge', async () => {
+  const calls: string[] = [];
+  const result = await previewAnnotationOperationsWithNativeBridge(
+    [{ type: 'redact', query: 'SSN 123-45-6789', pageIndices: [0, 2], author: 'Sparrow' }],
+    {
+      documentId: '/tmp/paper.pdf',
+      label: 'Redact "SSN 123-45-6789" in paper.pdf',
+      getBridge: async () => ({
+        previewOperationsJson: async (batchJson) => {
+          calls.push(batchJson);
+          return JSON.stringify({ ok: true, batchId: 'rd1', operationCount: 2, rectCount: 4 });
+        },
+      }),
+    },
+  );
+
+  assert.deepEqual(result, { handled: true, operationCount: 2, rectCount: 4, batchId: 'rd1' });
+  assert.equal(calls.length, 1);
+  const batch = JSON.parse(calls[0]);
+  assert.equal(batch.documentId, '/tmp/paper.pdf');
+  assert.equal(batch.label, 'Redact "SSN 123-45-6789" in paper.pdf');
+  assert.equal(batch.operations[0].type, 'redact');
+  assert.equal(batch.operations[0].query, 'SSN 123-45-6789');
+  assert.deepEqual(batch.operations[0].pageIndices, [0, 2]);
+  assert.equal(batch.operations[0].author, 'Sparrow');
+  assert.equal(batch.operations[0].source, 'user');
+});
+
 test('falls back when Qt PDF operation bridge is unavailable', async () => {
   const result = await previewHighlightOperationsWithNativeBridge(operations, {
     documentId: '/tmp/paper.pdf',
@@ -450,6 +478,23 @@ test('App routes watermark through native PDF4QT preview before backend output f
     addWatermarkSource,
     /type: 'watermark'/,
     'Watermarks should preview as native PDF4QT document annotations before writing a new file.',
+  );
+});
+
+test('App routes text redaction through native PDF4QT mark preview before backend output fallback', () => {
+  const appSource = readFileSync(resolve('src/App.tsx'), 'utf8');
+  const redactPdfTextSource = sourceBlock(appSource, 'const redactPdfText = useCallback', 'const splitPdf = useCallback');
+
+  assertManualAnnotationNativeFirst(redactPdfTextSource, "'/redact'");
+  assert.match(
+    redactPdfTextSource,
+    /type: 'redact'/,
+    'Text redaction should mark real PDF4QT Redact annotations before backend fallback.',
+  );
+  assert.match(
+    redactPdfTextSource,
+    /pageIndices/,
+    'Native redaction preview should preserve the same page range scope as backend redaction.',
   );
 });
 

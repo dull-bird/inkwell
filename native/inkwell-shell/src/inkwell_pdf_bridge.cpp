@@ -12,6 +12,7 @@
 #include "pdfoptionalcontent.h"
 #include "pdfpage.h"
 #include "pdfprogramcontroller.h"
+#include "pdfredact.h"
 #include "pdfrenderer.h"
 #include "pdftextlayout.h"
 #include "pdftextlayoutgenerator.h"
@@ -361,6 +362,100 @@ std::vector<CreatedAnnotation> createWatermarkAnnotations(
     return annotations;
 }
 
+std::optional<std::vector<pdf::PDFInteger>> readOptionalPageIndices(
+    const QJsonObject& operation,
+    size_t pageCount,
+    QString* errorMessage
+)
+{
+    const QJsonValue value = operation.value(QStringLiteral("pageIndices"));
+    if (value.isUndefined() || value.isNull()) return std::vector<pdf::PDFInteger>{};
+    if (!value.isArray()) {
+        *errorMessage = QStringLiteral("Redaction pageIndices must be an array of page indexes.");
+        return std::nullopt;
+    }
+
+    std::vector<pdf::PDFInteger> pageIndices;
+    for (const QJsonValue& item : value.toArray()) {
+        if (!item.isDouble()) {
+            *errorMessage = QStringLiteral("Redaction pageIndices must contain numeric page indexes.");
+            return std::nullopt;
+        }
+        const int pageIndex = item.toInt(-1);
+        if (pageIndex < 0 || static_cast<size_t>(pageIndex) >= pageCount) {
+            *errorMessage = QStringLiteral("Redaction page index outside current document.");
+            return std::nullopt;
+        }
+        const pdf::PDFInteger pdfPageIndex = static_cast<pdf::PDFInteger>(pageIndex);
+        if (std::find(pageIndices.begin(), pageIndices.end(), pdfPageIndex) == pageIndices.end()) {
+            pageIndices.push_back(pdfPageIndex);
+        }
+    }
+
+    return pageIndices;
+}
+
+bool isPageAllowed(const std::vector<pdf::PDFInteger>& pageIndices, pdf::PDFInteger pageIndex)
+{
+    return pageIndices.empty() || std::find(pageIndices.begin(), pageIndices.end(), pageIndex) != pageIndices.end();
+}
+
+std::vector<CreatedAnnotation> createRedactionAnnotations(
+    pdf::PDFDocumentBuilder* builder,
+    pdf::PDFDocument& document,
+    const pdf::PDFCatalog* catalog,
+    const QJsonObject& operation,
+    int* rectCount,
+    QString* errorMessage
+)
+{
+    const QString query = operation.value(QStringLiteral("query")).toString().trimmed();
+    if (query.isEmpty()) {
+        *errorMessage = QStringLiteral("Redaction annotation must include query.");
+        return {};
+    }
+
+    const std::optional<std::vector<pdf::PDFInteger>> pageIndices = readOptionalPageIndices(
+        operation,
+        catalog->getPageCount(),
+        errorMessage
+    );
+    if (!pageIndices) return {};
+
+    const bool caseSensitive = operation.value(QStringLiteral("caseSensitive")).toBool(false);
+    const QColor redactionColor = operation.value(QStringLiteral("color")).isArray()
+        ? readColor(operation)
+        : Qt::black;
+    const std::vector<TextMarkupHit> hits = findTextMarkupHits(document, query, caseSensitive);
+
+    std::vector<CreatedAnnotation> annotations;
+    for (const TextMarkupHit& hit : hits) {
+        if (!isPageAllowed(*pageIndices, hit.pageIndex)) continue;
+
+        const pdf::PDFPage* pageObject = catalog->getPage(hit.pageIndex);
+        if (!pageObject) continue;
+
+        QPolygonF quadrilaterals;
+        for (const QRectF& rect : hit.rects) {
+            appendHighlightQuadrilateral(quadrilaterals, rect);
+            ++(*rectCount);
+        }
+        if (quadrilaterals.isEmpty()) continue;
+
+        const pdf::PDFObjectReference page = pageObject->getPageReference();
+        annotations.push_back(CreatedAnnotation{
+            page,
+            builder->createAnnotationRedact(page, quadrilaterals, redactionColor),
+        });
+    }
+
+    if (annotations.empty()) {
+        *errorMessage = QStringLiteral("Redaction query did not match current document.");
+    }
+
+    return annotations;
+}
+
 bool setImageStampAppearance(
     pdf::PDFDocumentBuilder* builder,
     pdf::PDFObjectReference annotation,
@@ -605,7 +700,7 @@ std::optional<CreatedAnnotation> createStandardAnnotation(
     return std::nullopt;
 }
 
-QString siblingAppliedPath(const QString& sourcePath)
+QString siblingOutputPath(const QString& sourcePath, const QString& suffix)
 {
     const QFileInfo sourceInfo(sourcePath);
     const QDir directory = sourceInfo.absoluteDir();
@@ -613,12 +708,22 @@ QString siblingAppliedPath(const QString& sourcePath)
         ? QStringLiteral("document")
         : sourceInfo.completeBaseName();
 
-    QString candidate = directory.filePath(baseName + QStringLiteral("_applied.pdf"));
+    QString candidate = directory.filePath(QStringLiteral("%1_%2.pdf").arg(baseName, suffix));
     for (int index = 2; QFileInfo::exists(candidate); ++index) {
-        candidate = directory.filePath(QStringLiteral("%1_applied_%2.pdf").arg(baseName).arg(index));
+        candidate = directory.filePath(QStringLiteral("%1_%2_%3.pdf").arg(baseName, suffix).arg(index));
     }
 
     return QFileInfo(candidate).absoluteFilePath();
+}
+
+QString siblingAppliedPath(const QString& sourcePath)
+{
+    return siblingOutputPath(sourcePath, QStringLiteral("applied"));
+}
+
+QString siblingRedactedPath(const QString& sourcePath)
+{
+    return siblingOutputPath(sourcePath, QStringLiteral("redacted"));
 }
 
 QJsonObject availabilityJson(bool ok, pdfviewer::PDFUndoRedoManager* undoManager)
@@ -756,6 +861,33 @@ QString InkwellPdfBridge::previewOperationsJson(const QString& batchJson)
             continue;
         }
 
+        if (type == QStringLiteral("redact")) {
+            QString errorMessage;
+            int redactionRectCount = 0;
+            const std::vector<CreatedAnnotation> annotations = createRedactionAnnotations(
+                modifier.getBuilder(),
+                *sourceDocument,
+                catalog,
+                operation,
+                &redactionRectCount,
+                &errorMessage
+            );
+            if (annotations.empty()) {
+                return parseErrorJson(errorMessage);
+            }
+
+            for (const CreatedAnnotation& created : annotations) {
+                if (created.refreshAppearance) {
+                    modifier.getBuilder()->updateAnnotationAppearanceStreams(created.annotation);
+                }
+                previewBatch.annotations.push_back(PreviewAnnotationRef{ created.page, created.annotation });
+                ++previewBatch.operationCount;
+            }
+            previewBatch.rectCount += redactionRectCount;
+            previewBatch.requiresRedaction = true;
+            continue;
+        }
+
         if (isSupportedAnnotationOperationType(type)) {
             QString errorMessage;
             const std::optional<CreatedAnnotation> created = createStandardAnnotation(
@@ -890,10 +1022,21 @@ QString InkwellPdfBridge::previewOperationsJson(const QString& batchJson)
 
 QString InkwellPdfBridge::applyOperationsJson(const QString& batchId)
 {
-    const pdf::PDFDocument* document = programController ? programController->getDocument() : nullptr;
+    pdf::PDFDocument* document = programController ? programController->getDocument() : nullptr;
     if (!document) {
         return parseErrorJson(QStringLiteral("No PDF4QT document is open."));
     }
+
+    const QString requestedBatchId = batchId.trimmed();
+    const PreviewBatch* targetBatch = nullptr;
+    for (const PreviewBatch& activeBatch : activePreviewBatches) {
+        if ((!requestedBatchId.isEmpty() && activeBatch.batchId == requestedBatchId)
+            || (requestedBatchId.isEmpty() && activeBatch.requiresRedaction)) {
+            targetBatch = &activeBatch;
+            break;
+        }
+    }
+    const bool requiresRedaction = targetBatch && targetBatch->requiresRedaction;
 
     QString sourcePath = currentPath;
     if (sourcePath.isEmpty() && programController) {
@@ -903,13 +1046,34 @@ QString InkwellPdfBridge::applyOperationsJson(const QString& batchId)
         return parseErrorJson(QStringLiteral("Current PDF path is unavailable."));
     }
 
-    const QString outputPath = siblingAppliedPath(sourcePath);
+    const QString outputPath = requiresRedaction ? siblingRedactedPath(sourcePath) : siblingAppliedPath(sourcePath);
     if (QFileInfo(outputPath).absoluteFilePath() == QFileInfo(sourcePath).absoluteFilePath()) {
         return parseErrorJson(QStringLiteral("Refusing to write PDF output over source file."));
     }
 
     pdf::PDFDocumentWriter writer(nullptr);
-    const pdf::PDFOperationResult result = writer.write(outputPath, document, true);
+    const pdf::PDFOperationResult result = [&]() {
+        if (!requiresRedaction) {
+            return writer.write(outputPath, document, true);
+        }
+
+        TextLayoutContext redactContext(*document);
+        pdf::PDFRedact redactProcessor(
+            document,
+            &redactContext.fontCache,
+            &redactContext.cms,
+            &redactContext.optionalContentActivity,
+            &redactContext.meshQualitySettings,
+            Qt::black
+        );
+        pdf::PDFRedact::Options options;
+        options.setFlag(pdf::PDFRedact::CopyTitle, true);
+        options.setFlag(pdf::PDFRedact::CopyMetadata, true);
+        options.setFlag(pdf::PDFRedact::CopyOutline, true);
+        pdf::PDFDocument redactedDocument = redactProcessor.perform(pdf::PDFRedact::Options(options));
+        return writer.write(outputPath, &redactedDocument, false);
+    }();
+
     if (!result) {
         return compactJson({
             { QStringLiteral("ok"), false },

@@ -44,6 +44,7 @@ private:
         QString batchId;
         int operationCount = 0;
         int rectCount = 0;
+        bool requiresRedaction = false;
         std::vector<PreviewAnnotationRef> annotations;
     };
 

@@ -90,6 +90,12 @@ export type NativeAnnotationOperation =
       opacity?: number;
     }
   | {
+      type: 'redact';
+      query: string;
+      author?: string;
+      pageIndices?: number[];
+    }
+  | {
       type: 'comment';
       page: number;
       x: number;
