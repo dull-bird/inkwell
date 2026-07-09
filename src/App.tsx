@@ -1782,6 +1782,30 @@ export default function App() {
         commentTarget.y,
         signatureText,
       );
+      const nativePreview = await previewAnnotationOperationsWithNativeBridge(
+        [
+          {
+            type: 'freeText',
+            page: request.page,
+            x: request.x,
+            y: request.y,
+            text: request.text,
+            author: request.signer,
+            width: 180,
+            height: 40,
+          },
+        ],
+        {
+          documentId: activeDocument.path,
+          label: `Typed signature "${request.text}" in ${activeDocument.title}`,
+        },
+      );
+      if (nativePreview.handled) {
+        recordNativePreview(documentId, nativePreview, nativePreview.operationCount ?? 1);
+        clearPlacementTarget(documentId);
+        setStatus('已在 PDF4QT 中预览签名文本，可撤回或应用保存。');
+        return;
+      }
       const result = await backendPost<FileOutputResponse>('/signature', request);
       setAgentOutput(result.output);
       await loadPdf(result.output);
@@ -1792,7 +1816,17 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [activeDocument, backendPost, beginPlacement, clearPlacementTarget, commentTarget, loadPdf, placementMode, signatureText]);
+  }, [
+    activeDocument,
+    backendPost,
+    beginPlacement,
+    clearPlacementTarget,
+    commentTarget,
+    loadPdf,
+    placementMode,
+    recordNativePreview,
+    signatureText,
+  ]);
 
   const addImageSignature = useCallback(async () => {
     if (!activeDocument) {

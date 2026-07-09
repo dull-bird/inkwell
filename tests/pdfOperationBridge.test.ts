@@ -355,6 +355,22 @@ test('App routes manual annotations through native preview before backend output
   assertManualAnnotationNativeFirst(addShapeSource, "'/shape'");
 });
 
+test('App routes typed signature through native free text preview before backend output fallback', () => {
+  const appSource = readFileSync(resolve('src/App.tsx'), 'utf8');
+  const addTypedSignatureSource = sourceBlock(
+    appSource,
+    'const addTypedSignature = useCallback',
+    'const addImageSignature = useCallback',
+  );
+
+  assertManualAnnotationNativeFirst(addTypedSignatureSource, "'/signature'");
+  assert.match(
+    addTypedSignatureSource,
+    /type: 'freeText'/,
+    'Typed signatures should preview as standard FreeText annotations in PDF4QT.',
+  );
+});
+
 function sourceBlock(source: string, startMarker: string, endMarker: string): string {
   const startIndex = source.indexOf(startMarker);
   const endIndex = source.indexOf(endMarker, startIndex + startMarker.length);
