@@ -176,6 +176,34 @@ test('previews comment free text stamp and shape annotations through Qt PDF oper
   assert.equal(batch.operations[4].strokeWidth, 2);
 });
 
+test('previews document watermark through Qt PDF operation bridge', async () => {
+  const calls: string[] = [];
+  const result = await previewAnnotationOperationsWithNativeBridge(
+    [{ type: 'watermark', text: 'Internal Review', author: 'Sparrow', opacity: 0.16 }],
+    {
+      documentId: '/tmp/paper.pdf',
+      label: 'Watermark "Internal Review" in paper.pdf',
+      getBridge: async () => ({
+        previewOperationsJson: async (batchJson) => {
+          calls.push(batchJson);
+          return JSON.stringify({ ok: true, batchId: 'wm1', operationCount: 3, rectCount: 0 });
+        },
+      }),
+    },
+  );
+
+  assert.deepEqual(result, { handled: true, operationCount: 3, rectCount: 0, batchId: 'wm1' });
+  assert.equal(calls.length, 1);
+  const batch = JSON.parse(calls[0]);
+  assert.equal(batch.documentId, '/tmp/paper.pdf');
+  assert.equal(batch.label, 'Watermark "Internal Review" in paper.pdf');
+  assert.equal(batch.operations[0].type, 'watermark');
+  assert.equal(batch.operations[0].text, 'Internal Review');
+  assert.equal(batch.operations[0].author, 'Sparrow');
+  assert.equal(batch.operations[0].opacity, 0.16);
+  assert.equal(batch.operations[0].source, 'user');
+});
+
 test('falls back when Qt PDF operation bridge is unavailable', async () => {
   const result = await previewHighlightOperationsWithNativeBridge(operations, {
     documentId: '/tmp/paper.pdf',
@@ -410,6 +438,18 @@ test('App routes image signature through native image stamp preview before backe
     addImageSignatureSource,
     /type: 'imageStamp'/,
     'Image signatures should preview as image-backed Stamp annotations in PDF4QT.',
+  );
+});
+
+test('App routes watermark through native PDF4QT preview before backend output fallback', () => {
+  const appSource = readFileSync(resolve('src/App.tsx'), 'utf8');
+  const addWatermarkSource = sourceBlock(appSource, 'const addWatermark = useCallback', 'const compressPdf = useCallback');
+
+  assertManualAnnotationNativeFirst(addWatermarkSource, "'/watermark'");
+  assert.match(
+    addWatermarkSource,
+    /type: 'watermark'/,
+    'Watermarks should preview as native PDF4QT document annotations before writing a new file.',
   );
 });
 

@@ -1573,10 +1573,25 @@ export default function App() {
       return;
     }
     setBusy(true);
+    const documentId = activeDocument.id;
     try {
+      const request = buildWatermarkRequest(activeDocument.path, watermarkText);
+      const nativePreview = await previewAnnotationOperationsWithNativeBridge(
+        [{ type: 'watermark', text: request.text, author: 'Sparrow', opacity: 0.16 }],
+        {
+          documentId: activeDocument.path,
+          label: `Watermark "${request.text}" in ${activeDocument.title}`,
+        },
+      );
+      if (nativePreview.handled) {
+        recordNativePreview(documentId, nativePreview, nativePreview.operationCount ?? 1);
+        setStatus('已在 PDF4QT 中预览水印，可撤回或应用保存。');
+        return;
+      }
+
       const result = await backendPost<FileOutputResponse>(
         '/watermark',
-        buildWatermarkRequest(activeDocument.path, watermarkText),
+        request,
       );
       setAgentOutput(result.output);
       await loadPdf(result.output);
@@ -1586,7 +1601,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [activeDocument, backendPost, loadPdf, watermarkText]);
+  }, [activeDocument, backendPost, loadPdf, recordNativePreview, watermarkText]);
 
   const compressPdf = useCallback(async () => {
     if (!activeDocument) {

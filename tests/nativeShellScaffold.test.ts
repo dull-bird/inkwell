@@ -53,6 +53,9 @@ test('scaffolds Qt shell with PDF4QT editor as primary surface', () => {
   assert.match(bridgeSource, /createAnnotationText/);
   assert.match(bridgeSource, /TextAnnotationIcon::Comment/);
   assert.match(bridgeSource, /createAnnotationFreeText/);
+  assert.match(bridgeSource, /type == QStringLiteral\("watermark"\)/);
+  assert.match(bridgeSource, /createWatermarkAnnotations/);
+  assert.match(bridgeSource, /getMediaBox\(\)/);
   assert.match(bridgeSource, /createAnnotationStamp/);
   assert.match(bridgeSource, /imageStamp/);
   assert.match(bridgeSource, /QImage/);

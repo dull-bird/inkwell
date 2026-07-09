@@ -120,6 +120,7 @@ bool isSupportedTextMarkupType(const QString& type)
 bool isSupportedAnnotationOperationType(const QString& type)
 {
     return type == QStringLiteral("comment")
+        || type == QStringLiteral("watermark")
         || type == QStringLiteral("freeText")
         || type == QStringLiteral("stamp")
         || type == QStringLiteral("imageStamp")
@@ -291,6 +292,73 @@ pdf::PDFObjectReference createTextMarkupAnnotation(
     }
 
     return builder->createAnnotationHighlight(page, quadrilaterals, color);
+}
+
+std::vector<CreatedAnnotation> createWatermarkAnnotations(
+    pdf::PDFDocumentBuilder* builder,
+    const pdf::PDFCatalog* catalog,
+    const QJsonObject& operation,
+    QString* errorMessage
+)
+{
+    const QString text = operation.value(QStringLiteral("text")).toString().trimmed();
+    if (text.isEmpty()) {
+        *errorMessage = QStringLiteral("Watermark annotation must include text.");
+        return {};
+    }
+
+    const QString author = operation.value(QStringLiteral("author")).toString(QStringLiteral("Inkwell")).trimmed();
+    const QString title = author.isEmpty() ? QStringLiteral("Inkwell") : author;
+    const QColor textColor = operation.value(QStringLiteral("color")).isArray()
+        ? readColor(operation)
+        : QColor(80, 80, 80);
+
+    std::vector<CreatedAnnotation> annotations;
+    const size_t pageCount = catalog->getPageCount();
+    annotations.reserve(pageCount);
+
+    for (size_t pageIndex = 0; pageIndex < pageCount; ++pageIndex) {
+        const pdf::PDFPage* pageObject = catalog->getPage(pageIndex);
+        if (!pageObject) continue;
+
+        const QRectF mediaBox = pageObject->getMediaBox();
+        if (!mediaBox.isValid() || mediaBox.isEmpty()) continue;
+
+        const double maxWidth = std::max(72.0, mediaBox.width() * 0.86);
+        const double annotationWidth = std::clamp(mediaBox.width() * 0.68, 72.0, maxWidth);
+        const double annotationHeight = std::clamp(mediaBox.height() * 0.08, 36.0, 96.0);
+        const QRectF rect(
+            QPointF(
+                mediaBox.left() + (mediaBox.width() - annotationWidth) / 2.0,
+                mediaBox.top() + (mediaBox.height() - annotationHeight) / 2.0
+            ),
+            QSizeF(annotationWidth, annotationHeight)
+        );
+
+        pdf::PDFFreeTextStyle style;
+        style.fontSize = std::clamp(mediaBox.width() / 14.0, 20.0, 64.0);
+        style.textColor = textColor;
+        style.textAlignment = pdf::TextAlignment(Qt::AlignCenter);
+
+        annotations.push_back(CreatedAnnotation{
+            pageObject->getPageReference(),
+            builder->createAnnotationFreeText(
+                pageObject->getPageReference(),
+                rect,
+                title,
+                QStringLiteral("Watermark"),
+                text,
+                style,
+                false
+            ),
+        });
+    }
+
+    if (annotations.empty()) {
+        *errorMessage = QStringLiteral("Watermark preview could not find any writable PDF pages.");
+    }
+
+    return annotations;
 }
 
 bool setImageStampAppearance(
@@ -665,6 +733,29 @@ QString InkwellPdfBridge::previewOperationsJson(const QString& batchJson)
 
         const QJsonObject operation = operationValue.toObject();
         const QString type = operation.value(QStringLiteral("type")).toString();
+        if (type == QStringLiteral("watermark")) {
+            QString errorMessage;
+            const std::vector<CreatedAnnotation> annotations = createWatermarkAnnotations(
+                modifier.getBuilder(),
+                catalog,
+                operation,
+                &errorMessage
+            );
+            if (annotations.empty()) {
+                return parseErrorJson(errorMessage);
+            }
+
+            for (const CreatedAnnotation& created : annotations) {
+                modifier.getBuilder()->setAnnotationOpacity(created.annotation, readOpacity(operation));
+                if (created.refreshAppearance) {
+                    modifier.getBuilder()->updateAnnotationAppearanceStreams(created.annotation);
+                }
+                previewBatch.annotations.push_back(PreviewAnnotationRef{ created.page, created.annotation });
+                ++previewBatch.operationCount;
+            }
+            continue;
+        }
+
         if (isSupportedAnnotationOperationType(type)) {
             QString errorMessage;
             const std::optional<CreatedAnnotation> created = createStandardAnnotation(

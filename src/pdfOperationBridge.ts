@@ -84,6 +84,12 @@ export type NativeTextMarkupKind = 'highlight' | 'underline' | 'strikeout';
 
 export type NativeAnnotationOperation =
   | {
+      type: 'watermark';
+      text: string;
+      author?: string;
+      opacity?: number;
+    }
+  | {
       type: 'comment';
       page: number;
       x: number;
