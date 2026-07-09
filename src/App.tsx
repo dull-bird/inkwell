@@ -522,7 +522,17 @@ export default function App() {
   const handleOpenFile = async () => {
     const path = await window.electronAPI.openPdfFile();
     if (!path) return;
+    let nativeShellOpened = false;
+    try {
+      await window.electronAPI.openNativeShell(path);
+      nativeShellOpened = true;
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
     await loadPdf(path);
+    if (nativeShellOpened) {
+      setStatus(`已在 PDF4QT 中打开 ${fileName(path)}。React 仅保留 agent/workspace side panel。`);
+    }
   };
 
   const handleOpenFolder = async () => {
