@@ -24,13 +24,27 @@ test('Open PDF launches the native shell before loading React workspace metadata
   const handleOpenFileSource = sourceBlock(appSource, 'const handleOpenFile = async () => {', 'const handleOpenFolder');
   const openDialogIndex = handleOpenFileSource.indexOf('openPdfFile()');
   const nativeShellIndex = handleOpenFileSource.indexOf('openNativeShell(path)');
-  const loadPdfIndex = handleOpenFileSource.indexOf('loadPdf(path)');
+  const loadPdfIndex = handleOpenFileSource.indexOf('loadPdf(path');
 
   assert.ok(openDialogIndex > -1, 'Open PDF should still use the system file picker.');
   assert.ok(nativeShellIndex > -1, 'Open PDF should immediately hand the document to the native PDF4QT shell.');
   assert.ok(loadPdfIndex > -1, 'Open PDF should still load workspace metadata for the agent side panel.');
   assert.ok(openDialogIndex < nativeShellIndex, 'Native shell launch needs the selected PDF path.');
   assert.ok(nativeShellIndex < loadPdfIndex, 'Native PDF4QT shell should be the primary open path, before React metadata loading.');
+});
+
+test('activating an existing workspace PDF opens it in the native shell', () => {
+  const activateDocumentSource = sourceBlock(
+    appSource,
+    'const activateDocument = useCallback',
+    'const loadPdf = useCallback',
+  );
+  const setCurrentFileIndex = activateDocumentSource.indexOf('setCurrentFile(document.path)');
+  const nativeShellIndex = activateDocumentSource.indexOf('openNativeShell(document.path)');
+
+  assert.ok(setCurrentFileIndex > -1, 'Activating a workspace document should update current file context.');
+  assert.ok(nativeShellIndex > -1, 'Activating a workspace document should open the native PDF4QT shell.');
+  assert.ok(setCurrentFileIndex < nativeShellIndex, 'Agent/workspace context should be set before launching the native shell.');
 });
 
 test('does not ship react-pdf or pdfjs frontend dependencies', () => {

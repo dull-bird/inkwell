@@ -477,13 +477,21 @@ export default function App() {
     [setDocumentPatch],
   );
 
-  const activateDocument = useCallback(async (document: SparrowDocument) => {
+  const activateDocument = useCallback(async (document: SparrowDocument, options: { openNativeShell?: boolean } = {}) => {
     setActiveDocumentId(document.id);
     await window.electronAPI.setCurrentFile(document.path);
+    if (options.openNativeShell ?? true) {
+      try {
+        await window.electronAPI.openNativeShell(document.path);
+        setStatus(`已在 PDF4QT 中打开 ${document.title}。React 仅保留 agent/workspace side panel。`);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : String(error));
+      }
+    }
   }, []);
 
   const loadPdf = useCallback(
-    async (path: string) => {
+    async (path: string, options: { openExistingInNativeShell?: boolean } = {}) => {
       addWorkspacePaths([path]);
       const [backendUrl, backendToken] = await Promise.all([
         window.electronAPI.getBackendUrl(),
@@ -494,7 +502,7 @@ export default function App() {
       setBackend(nextBackend);
 
       if (existing) {
-        await activateDocument(existing);
+        await activateDocument(existing, { openNativeShell: options.openExistingInNativeShell ?? true });
         return;
       }
 
@@ -529,7 +537,7 @@ export default function App() {
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     }
-    await loadPdf(path);
+    await loadPdf(path, { openExistingInNativeShell: false });
     if (nativeShellOpened) {
       setStatus(`已在 PDF4QT 中打开 ${fileName(path)}。React 仅保留 agent/workspace side panel。`);
     }
