@@ -6,11 +6,11 @@ import {
   nativePdfCoreStatusSummary,
 } from '../shared/native-pdf-core';
 
-test('reports pdf.js and PyMuPDF fallback when PDF4QT host is not configured', () => {
+test('reports unavailable PDF4QT renderer when PDF4QT host is not configured', () => {
   const status = resolveNativePdfCoreStatus({ hostPath: undefined, hostExists: false });
 
-  assert.equal(status.mode, 'pdfjs-fallback');
-  assert.equal(status.renderer, 'pdf.js');
+  assert.equal(status.mode, 'pdf4qt-unavailable');
+  assert.equal(status.renderer, 'unavailable');
   assert.equal(status.writeEngine, 'PyMuPDF');
   assert.equal(status.pdf4qt.available, false);
   assert.match(nativePdfCoreStatusSummary(status), /PDF4QT host not configured/);
@@ -20,12 +20,12 @@ test('reports PDF4QT available when native host path exists', () => {
   const status = resolveNativePdfCoreStatus({ hostPath: '/opt/inkwell/inkwell-pdf4qt-host', hostExists: true });
 
   assert.equal(status.mode, 'pdf4qt-ready');
-  assert.equal(status.renderer, 'pdf.js');
+  assert.equal(status.renderer, 'PDF4QT');
   assert.equal(status.writeEngine, 'PyMuPDF');
   assert.equal(status.pdf4qt.available, true);
   assert.equal(status.pdf4qt.envVar, PDF4QT_HOST_ENV);
   assert.match(nativePdfCoreStatusSummary(status), /PDF4QT native command bridge ready/);
-  assert.match(nativePdfCoreStatusSummary(status), /Viewer: pdf\.js/);
+  assert.match(nativePdfCoreStatusSummary(status), /Viewer: PDF4QT/);
   assert.match(nativePdfCoreStatusSummary(status), /Native core: PDF4QT/);
 });
 

@@ -15,7 +15,8 @@ test('declares native host build scripts without coupling them to normal app bui
     packageJson.scripts['native:package'],
     'npm run native:configure && npm run native:build && npm run native:stage',
   );
-  assert.equal(packageJson.scripts.build, 'tsc && vite build && npm run build:electron');
+  assert.equal(packageJson.scripts.build, 'npm run build:renderer && npm run build:electron');
+  assert.equal(packageJson.scripts['build:renderer'], 'tsc && vite build');
 });
 
 test('scaffolds a Qt stdio JSON native PDF4QT host project', () => {
@@ -96,4 +97,17 @@ test('auto-configures the native host with local Qt and PDF4QT when available', 
   assert.match(script, /INKWELL_NATIVE_PREFIX/);
   assert.match(script, /gcc-10/);
   assert.match(script, /--stub/);
+});
+
+test('native PDF4QT host renders pages as PNG files for the renderer surface', () => {
+  const adapter = readFileSync(resolve('native/pdf4qt-host/src/pdf4qt_adapter.cpp'), 'utf8');
+  const header = readFileSync(resolve('native/pdf4qt-host/src/pdf4qt_adapter.h'), 'utf8');
+  const readme = readFileSync(resolve('native/pdf4qt-host/README.md'), 'utf8');
+
+  assert.match(adapter, /method == "export_pages_as_images"/);
+  assert.match(adapter, /exportPagesAsImages/);
+  assert.match(adapter, /QImage/);
+  assert.match(adapter, /render/);
+  assert.match(header, /exportPagesAsImages/);
+  assert.match(readme, /export_pages_as_images/);
 });

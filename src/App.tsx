@@ -75,7 +75,6 @@ import {
 } from './pdfFileActions';
 import { parsePageRanges } from './pdfRanges';
 import { buildRemainingPageOrder, buildRotationMap, expandPageRanges } from './pageOperations';
-import { countHighlightRects } from './pdfHighlights';
 import { pdfPlacementLabel, pdfPlacementPrompt, type PdfPlacementMode } from './pdfPlacementMode';
 import { nativePdfCoreStatusSummary, type NativePdfCoreStatus } from '../shared/native-pdf-core';
 import {
@@ -86,6 +85,18 @@ import {
   type AiPermissionMode,
 } from './privacy';
 import { filterSkillCatalog, SPARROW_SKILLS } from './skillCatalog';
+import {
+  applyOperationsWithNativeBridge,
+  clearPreviewWithNativeBridge,
+  getCurrentDocumentWithNativeBridge,
+  previewAnnotationOperationsWithNativeBridge,
+  previewHighlightOperationsWithNativeBridge,
+  previewTextQueryMarkupWithNativeBridge,
+  type NativeHighlightPreviewResult,
+  redoWithNativeBridge,
+  undoWithNativeBridge,
+} from './pdfOperationBridge';
+import { isNativeSidePanelSurface } from './nativeSidePanel';
 import {
   buildNativeAgentHandoffMarkdown,
   buildNativeAgentNextPrompt,
@@ -209,10 +220,6 @@ interface DocumentInfoResponse {
   page_count: number;
 }
 
-interface HighlightSearchResponse {
-  operations: HighlightOperation[];
-}
-
 interface FormFieldsResponse {
   fields: Array<{ name: string; type: string; value: unknown; page: number }>;
 }
@@ -222,6 +229,17 @@ interface PendingAgentPrompt {
   text: string;
 }
 
+interface NativeEditState {
+  batchId?: string;
+  previewCounts: number[];
+  redoPreviewCounts: number[];
+  clearUndoPreviewCounts: number[];
+  redoClearPreviewCounts: number[];
+  undoAvailable: boolean;
+  redoAvailable: boolean;
+  outputPath?: string;
+}
+
 export default function App() {
   const [documents, setDocuments] = useState<SparrowDocument[]>([]);
   const [workspacePaths, setWorkspacePaths] = useState<string[]>([]);
@@ -229,7 +247,7 @@ export default function App() {
   const [backend, setBackend] = useState<BackendState | null>(null);
   const [nativeCoreStatus, setNativeCoreStatus] = useState<NativePdfCoreStatus | null>(null);
   const [highlightsByDocument, setHighlightsByDocument] = useState<Record<string, HighlightOperation[]>>({});
-  const [searchHighlightsByDocument, setSearchHighlightsByDocument] = useState<Record<string, HighlightOperation[]>>({});
+  const [nativeEditsByDocument, setNativeEditsByDocument] = useState<Record<string, NativeEditState>>({});
   const [commentTargetsByDocument, setCommentTargetsByDocument] = useState<Record<string, CommentTarget>>({});
   const [placementMode, setPlacementMode] = useState<PdfPlacementMode>('none');
   const [undoStack, setUndoStack] = useState<Array<{ documentId: string; operations: HighlightOperation[] }>>([]);
@@ -275,8 +293,6 @@ export default function App() {
   const [signatureImageDimensions, setSignatureImageDimensions] = useState('180, 60');
   const [aiBrushInstruction, setAiBrushInstruction] = useState('highlight claims that need citations');
   const [skillSearch, setSkillSearch] = useState('');
-  const [pdfSearchQuery, setPdfSearchQuery] = useState('');
-  const [pdfSearchBusy, setPdfSearchBusy] = useState(false);
   const [sidebarView, setSidebarView] = useState<SidebarView>('files');
   const [leftSidebarVisible, setLeftSidebarVisible] = useState(true);
   const [rightSidebarVisible, setRightSidebarVisible] = useState(true);
@@ -285,10 +301,14 @@ export default function App() {
   const [pendingAgentPrompt, setPendingAgentPrompt] = useState<PendingAgentPrompt | null>(null);
   const [status, setStatus] = useState<string | null>('AI 默认关闭；打开 PDF 会自动做本地文档感知。');
   const [busy, setBusy] = useState(false);
+  const nativeSidePanel = isNativeSidePanelSurface();
 
   const activeDocument = documents.find((document) => document.id === activeDocumentId) ?? null;
   const highlights = activeDocument ? highlightsByDocument[activeDocument.id] ?? [] : [];
-  const searchHighlights = activeDocument ? searchHighlightsByDocument[activeDocument.id] ?? [] : [];
+  const nativeEditState = activeDocument ? nativeEditsByDocument[activeDocument.id] ?? null : null;
+  const nativePreviewCount = nativeEditState?.previewCounts.reduce((total, count) => total + count, 0) ?? 0;
+  const undoDisabled = nativeEditState ? !nativeEditState.undoAvailable : undoStack.length === 0;
+  const redoDisabled = nativeEditState ? !nativeEditState.redoAvailable : redoStack.length === 0;
   const commentTarget = activeDocument ? commentTargetsByDocument[activeDocument.id] ?? null : null;
   const aiAllowed = activeDocument ? isAiAllowed(aiPermissionMode, activeDocument.aiEnabled) : false;
   const filteredSkills = useMemo(() => filterSkillCatalog(SPARROW_SKILLS, skillSearch), [skillSearch]);
@@ -355,13 +375,52 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!nativeSidePanel) return;
+
+    let cancelled = false;
+    void getCurrentDocumentWithNativeBridge()
+      .then((result) => {
+        if (cancelled) return;
+        if (!result.handled) {
+          setStatus('PDF4QT bridge is not available in this panel.');
+          return;
+        }
+        if (!result.document) {
+          setStatus('No PDF4QT document is open.');
+          return;
+        }
+
+        const document: SparrowDocument = {
+          id: result.document.id,
+          path: result.document.path,
+          title: result.document.title,
+          status: 'ready',
+          pageCount: result.document.pageCount,
+          analysisStatus: 'idle',
+          aiEnabled: getDefaultDocumentAiEnabled(aiPermissionMode),
+        };
+        setDocuments((current) => {
+          const existingIndex = current.findIndex((item) => item.id === document.id);
+          if (existingIndex < 0) return [...current, document];
+          return current.map((item) => (item.id === document.id ? { ...item, ...document } : item));
+        });
+        setWorkspacePaths((current) => normalizeWorkspacePaths([...current, document.path]));
+        setHighlightsByDocument((current) => ({ ...current, [document.id]: current[document.id] ?? [] }));
+        setActiveDocumentId(document.id);
+        setStatus(`Connected to PDF4QT document ${document.title}.`);
+      })
+      .catch((error) => {
+        if (!cancelled) setStatus(error instanceof Error ? error.message : String(error));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [aiPermissionMode, nativeSidePanel]);
+
+  useEffect(() => {
     setPlacementMode('none');
   }, [activeDocumentId]);
-
-  const pdfUrl = useMemo(() => {
-    if (!backend || !activeDocument) return null;
-    return `${backend.url}/pdf?path=${encodeURIComponent(activeDocument.path)}`;
-  }, [backend, activeDocument]);
 
   const backendPost = useCallback(
     async <T,>(endpoint: string, body: unknown): Promise<T> => {
@@ -449,7 +508,6 @@ export default function App() {
       };
       setDocuments((current) => [...current, document]);
       setHighlightsByDocument((current) => ({ ...current, [document.id]: [] }));
-      setSearchHighlightsByDocument((current) => ({ ...current, [document.id]: [] }));
       setActiveDocumentId(document.id);
       await window.electronAPI.setCurrentFile(path);
       setStatus(`正在打开 ${document.title}，随后会自动做本地文档感知。`);
@@ -507,8 +565,30 @@ export default function App() {
     setRightSidebarVisible(true);
   }, [activeDocument, setDocumentPatch]);
 
+  const recordNativePreview = useCallback(
+    (documentId: string, nativePreview: NativeHighlightPreviewResult, count: number) => {
+      setNativeEditsByDocument((current) => {
+        const previous = current[documentId];
+        return {
+          ...current,
+          [documentId]: {
+            batchId: nativePreview.batchId,
+            previewCounts: [...(previous?.previewCounts ?? []), count],
+            redoPreviewCounts: [],
+            clearUndoPreviewCounts: [],
+            redoClearPreviewCounts: [],
+            undoAvailable: nativePreview.undoAvailable ?? true,
+            redoAvailable: nativePreview.redoAvailable ?? false,
+            outputPath: previous?.outputPath,
+          },
+        };
+      });
+    },
+    [],
+  );
+
   const addHighlightBatch = useCallback(
-    (batch: HighlightOperation[]) => {
+    async (batch: HighlightOperation[]) => {
       if (!activeDocument) {
         setStatus('Open a PDF first.');
         return;
@@ -517,54 +597,32 @@ export default function App() {
         setStatus('No matching text blocks found.');
         return;
       }
+      try {
+        const nativePreview = await previewHighlightOperationsWithNativeBridge(batch, {
+          documentId: activeDocument.path,
+          label: `Agent highlights for ${activeDocument.title}`,
+      });
+      if (nativePreview.handled) {
+        const count = nativePreview.rectCount ?? nativePreview.operationCount ?? batch.length;
+        recordNativePreview(activeDocument.id, nativePreview, count);
+        setStatus(`已在 PDF4QT 中预览 ${count} 个高亮。`);
+        return;
+      }
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+        return;
+      }
       const stableBatch = batch.map((op) => ({ ...op, id: op.id || crypto.randomUUID() }));
       setHighlightsByDocument((current) => ({
         ...current,
         [activeDocument.id]: [...(current[activeDocument.id] ?? []), ...stableBatch],
       }));
       setUndoStack((current) => [...current, { documentId: activeDocument.id, operations: stableBatch }]);
-      setRedoStack([]);
-      setStatus(`已预览 ${stableBatch.length} 个高亮，可撤回或应用保存。`);
-    },
-    [activeDocument],
-  );
-
-  const clearPdfSearch = useCallback(() => {
-    if (!activeDocument) return;
-    setPdfSearchQuery('');
-    setSearchHighlightsByDocument((current) => ({ ...current, [activeDocument.id]: [] }));
-    setStatus('已清除 PDF 查找结果。');
-  }, [activeDocument]);
-
-  const findInActiveDocument = useCallback(async () => {
-    if (!activeDocument) {
-      setStatus('Open a PDF first.');
-      return;
-    }
-
-    const query = pdfSearchQuery.trim();
-    if (!query) {
-      setSearchHighlightsByDocument((current) => ({ ...current, [activeDocument.id]: [] }));
-      setStatus('输入关键词后再查找。');
-      return;
-    }
-
-    setPdfSearchBusy(true);
-    try {
-      const result = await backendPost<HighlightSearchResponse>('/highlight', {
-        path: activeDocument.path,
-        query,
-        color: [0.15, 0.7, 0.68],
-      });
-      setSearchHighlightsByDocument((current) => ({ ...current, [activeDocument.id]: result.operations }));
-      const matchCount = countHighlightRects(result.operations);
-      setStatus(matchCount > 0 ? `找到 ${matchCount} 处“${query}”。` : `没有找到“${query}”。`);
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
-    } finally {
-      setPdfSearchBusy(false);
-    }
-  }, [activeDocument, backendPost, pdfSearchQuery]);
+    setRedoStack([]);
+    setStatus(`已预览 ${stableBatch.length} 个高亮，可撤回或应用保存。`);
+  },
+  [activeDocument, recordNativePreview],
+);
 
   const highlightHeadings = useCallback(() => {
     if (!activeDocument) {
@@ -584,7 +642,47 @@ export default function App() {
     setStatus('已把 AI 高亮标题请求发送给小雀。');
   }, [activeDocument, aiAllowed]);
 
-  const undo = useCallback(() => {
+  const undo = useCallback(async () => {
+    if (activeDocument && nativeEditState) {
+      try {
+        const nativeUndo = await undoWithNativeBridge();
+        if (nativeUndo.handled) {
+          setNativeEditsByDocument((current) => {
+            const previous = current[activeDocument.id] ?? nativeEditState;
+            const previewCounts = previous.previewCounts.slice();
+            const redoPreviewCounts = previous.redoPreviewCounts.slice();
+            const clearUndoPreviewCounts = previous.clearUndoPreviewCounts.slice();
+            const redoClearPreviewCounts = previous.redoClearPreviewCounts.slice();
+            if (clearUndoPreviewCounts.length > 0 && previewCounts.length === 0) {
+              previewCounts.push(...clearUndoPreviewCounts);
+              redoClearPreviewCounts.splice(0, redoClearPreviewCounts.length, ...clearUndoPreviewCounts);
+              clearUndoPreviewCounts.splice(0);
+            } else {
+              const undoneCount = previewCounts.pop();
+              if (undoneCount !== undefined) redoPreviewCounts.push(undoneCount);
+            }
+            return {
+              ...current,
+              [activeDocument.id]: {
+                ...previous,
+                previewCounts,
+                redoPreviewCounts,
+                clearUndoPreviewCounts,
+                redoClearPreviewCounts,
+                undoAvailable: nativeUndo.undoAvailable ?? previewCounts.length > 0,
+                redoAvailable: nativeUndo.redoAvailable ?? (redoPreviewCounts.length > 0 || redoClearPreviewCounts.length > 0),
+              },
+            };
+          });
+          setStatus('已通过 PDF4QT 撤回上一组预览操作。');
+          return;
+        }
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : String(error));
+        return;
+      }
+    }
+
     setUndoStack((current) => {
       const batch = current.at(-1);
       if (!batch) return current;
@@ -597,9 +695,49 @@ export default function App() {
       setStatus('已撤回上一组预览操作。');
       return current.slice(0, -1);
     });
-  }, []);
+  }, [activeDocument, nativeEditState]);
 
-  const redo = useCallback(() => {
+  const redo = useCallback(async () => {
+    if (activeDocument && nativeEditState) {
+      try {
+        const nativeRedo = await redoWithNativeBridge();
+        if (nativeRedo.handled) {
+          setNativeEditsByDocument((current) => {
+            const previous = current[activeDocument.id] ?? nativeEditState;
+            const previewCounts = previous.previewCounts.slice();
+            const redoPreviewCounts = previous.redoPreviewCounts.slice();
+            const clearUndoPreviewCounts = previous.clearUndoPreviewCounts.slice();
+            const redoClearPreviewCounts = previous.redoClearPreviewCounts.slice();
+            if (redoClearPreviewCounts.length > 0) {
+              previewCounts.splice(0);
+              clearUndoPreviewCounts.splice(0, clearUndoPreviewCounts.length, ...redoClearPreviewCounts);
+              redoClearPreviewCounts.splice(0);
+            } else {
+              const redoneCount = redoPreviewCounts.pop();
+              if (redoneCount !== undefined) previewCounts.push(redoneCount);
+            }
+            return {
+              ...current,
+              [activeDocument.id]: {
+                ...previous,
+                previewCounts,
+                redoPreviewCounts,
+                clearUndoPreviewCounts,
+                redoClearPreviewCounts,
+                undoAvailable: nativeRedo.undoAvailable ?? previewCounts.length > 0,
+                redoAvailable: nativeRedo.redoAvailable ?? (redoPreviewCounts.length > 0 || redoClearPreviewCounts.length > 0),
+              },
+            };
+          });
+          setStatus('已通过 PDF4QT 恢复上一组预览操作。');
+          return;
+        }
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : String(error));
+        return;
+      }
+    }
+
     setRedoStack((current) => {
       const batch = current.at(-1);
       if (!batch) return current;
@@ -611,12 +749,77 @@ export default function App() {
       setStatus('已恢复上一组预览操作。');
       return current.slice(0, -1);
     });
-  }, []);
+  }, [activeDocument, nativeEditState]);
+
+  const clearPreview = useCallback(async () => {
+    if (!activeDocument || (highlights.length === 0 && nativePreviewCount === 0)) return;
+
+    if (nativeEditState) {
+      try {
+        const nativeClear = await clearPreviewWithNativeBridge();
+        if (nativeClear.handled) {
+          setNativeEditsByDocument((current) => {
+            const previous = current[activeDocument.id] ?? nativeEditState;
+            const clearedCounts = previous.previewCounts.slice();
+            return {
+              ...current,
+              [activeDocument.id]: {
+                ...previous,
+                previewCounts: [],
+                redoPreviewCounts: [],
+                clearUndoPreviewCounts: clearedCounts,
+                redoClearPreviewCounts: [],
+                undoAvailable: nativeClear.undoAvailable ?? true,
+                redoAvailable: nativeClear.redoAvailable ?? false,
+              },
+            };
+          });
+          const clearedCount = nativeClear.rectCount ?? nativeClear.operationCount ?? nativePreviewCount;
+          setStatus(`已通过 PDF4QT 清除 ${clearedCount} 个预览标注。`);
+          return;
+        }
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : String(error));
+        return;
+      }
+    }
+
+    setHighlightsByDocument((current) => ({
+      ...current,
+      [activeDocument.id]: [],
+    }));
+    setUndoStack((current) => current.filter((batch) => batch.documentId !== activeDocument.id));
+    setRedoStack((current) => current.filter((batch) => batch.documentId !== activeDocument.id));
+    setStatus('已清除当前文档的预览标注。');
+  }, [activeDocument, highlights.length, nativeEditState, nativePreviewCount]);
 
   const applyHighlights = useCallback(async () => {
-    if (!activeDocument || highlights.length === 0) return;
+    if (!activeDocument || (highlights.length === 0 && !nativeEditState)) return;
     setBusy(true);
     try {
+      if (nativeEditState) {
+        const nativeApply = await applyOperationsWithNativeBridge({ batchId: nativeEditState.batchId });
+        if (nativeApply.handled) {
+          if (nativeApply.outputPath) setAgentOutput(nativeApply.outputPath);
+          setNativeEditsByDocument((current) => ({
+            ...current,
+            [activeDocument.id]: {
+              ...nativeEditState,
+              previewCounts: [],
+              redoPreviewCounts: [],
+              clearUndoPreviewCounts: [],
+              redoClearPreviewCounts: [],
+              undoAvailable: nativeApply.undoAvailable ?? nativeEditState.undoAvailable,
+              redoAvailable: nativeApply.redoAvailable ?? nativeEditState.redoAvailable,
+              outputPath: nativeApply.outputPath ?? nativeEditState.outputPath,
+            },
+          }));
+          setStatus(nativeApply.outputPath ? `已通过 PDF4QT 保存 ${fileName(nativeApply.outputPath)}` : '已通过 PDF4QT 应用修改。');
+          return;
+        }
+      }
+
+      if (highlights.length === 0) return;
       const result = await backendPost<ApplyResponse>('/apply', { path: activeDocument.path, operations: highlights });
       setAgentOutput(result.output);
       await loadPdf(result.output);
@@ -626,7 +829,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [activeDocument, backendPost, highlights, loadPdf]);
+  }, [activeDocument, backendPost, highlights, loadPdf, nativeEditState]);
 
   const addComment = useCallback(async () => {
     if (!activeDocument) {
@@ -684,6 +887,28 @@ export default function App() {
         commentText,
         'Sparrow',
       );
+      const nativePreview = await previewAnnotationOperationsWithNativeBridge(
+        [
+          {
+            type: 'freeText',
+            page: request.page,
+            x: request.x,
+            y: request.y,
+            text: request.text,
+            author: request.author,
+          },
+        ],
+        {
+          documentId: activeDocument.path,
+          label: `Free text "${request.text}" in ${activeDocument.title}`,
+        },
+      );
+      if (nativePreview.handled) {
+        recordNativePreview(documentId, nativePreview, nativePreview.operationCount ?? 1);
+        clearPlacementTarget(documentId);
+        setStatus('已在 PDF4QT 中预览可见文本标注，可撤回或应用保存。');
+        return;
+      }
       const result = await backendPost<FileOutputResponse>('/free-text', request);
       setAgentOutput(result.output);
       await loadPdf(result.output);
@@ -694,7 +919,17 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [activeDocument, backendPost, beginPlacement, clearPlacementTarget, commentTarget, commentText, loadPdf, placementMode]);
+  }, [
+    activeDocument,
+    backendPost,
+    beginPlacement,
+    clearPlacementTarget,
+    commentTarget,
+    commentText,
+    loadPdf,
+    placementMode,
+    recordNativePreview,
+  ]);
 
   const addStamp = useCallback(async () => {
     if (!activeDocument) {
@@ -708,9 +943,39 @@ export default function App() {
     setBusy(true);
     const documentId = activeDocument.id;
     try {
+      const request = buildStampRequest(
+        activeDocument.path,
+        commentTarget.page,
+        commentTarget.x,
+        commentTarget.y,
+        stampKind,
+        'Sparrow',
+      );
+      const nativePreview = await previewAnnotationOperationsWithNativeBridge(
+        [
+          {
+            type: 'stamp',
+            page: request.page,
+            x: request.x,
+            y: request.y,
+            stamp: request.stamp,
+            author: request.author,
+          },
+        ],
+        {
+          documentId: activeDocument.path,
+          label: `${request.stamp} stamp in ${activeDocument.title}`,
+        },
+      );
+      if (nativePreview.handled) {
+        recordNativePreview(documentId, nativePreview, nativePreview.operationCount ?? 1);
+        clearPlacementTarget(documentId);
+        setStatus(`已在 PDF4QT 中预览 ${request.stamp} 印章，可撤回或应用保存。`);
+        return;
+      }
       const result = await backendPost<FileOutputResponse>(
         '/stamp',
-        buildStampRequest(activeDocument.path, commentTarget.page, commentTarget.x, commentTarget.y, stampKind, 'Sparrow'),
+        request,
       );
       setAgentOutput(result.output);
       await loadPdf(result.output);
@@ -721,7 +986,17 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [activeDocument, backendPost, beginPlacement, clearPlacementTarget, commentTarget, loadPdf, placementMode, stampKind]);
+  }, [
+    activeDocument,
+    backendPost,
+    beginPlacement,
+    clearPlacementTarget,
+    commentTarget,
+    loadPdf,
+    placementMode,
+    recordNativePreview,
+    stampKind,
+  ]);
 
   const addShape = useCallback(async () => {
     if (!activeDocument) {
@@ -735,18 +1010,42 @@ export default function App() {
     setBusy(true);
     const documentId = activeDocument.id;
     try {
-      const result = await backendPost<FileOutputResponse>(
-        '/shape',
-        buildShapeRequest(
-          activeDocument.path,
-          commentTarget.page,
-          commentTarget.x,
-          commentTarget.y,
-          shapeKind,
-          shapeDimensions,
-          'Sparrow',
-        ),
+      const request = buildShapeRequest(
+        activeDocument.path,
+        commentTarget.page,
+        commentTarget.x,
+        commentTarget.y,
+        shapeKind,
+        shapeDimensions,
+        'Sparrow',
       );
+      const nativePreview = await previewAnnotationOperationsWithNativeBridge(
+        [
+          {
+            type: 'shape',
+            page: request.page,
+            x: request.x,
+            y: request.y,
+            kind: request.kind,
+            width: request.width,
+            height: request.height,
+            color: request.color,
+            strokeWidth: request.stroke_width,
+            author: request.author,
+          },
+        ],
+        {
+          documentId: activeDocument.path,
+          label: `${request.kind} shape in ${activeDocument.title}`,
+        },
+      );
+      if (nativePreview.handled) {
+        recordNativePreview(documentId, nativePreview, nativePreview.operationCount ?? 1);
+        clearPlacementTarget(documentId);
+        setStatus(`已在 PDF4QT 中预览 ${request.kind} 形状标注，可撤回或应用保存。`);
+        return;
+      }
+      const result = await backendPost<FileOutputResponse>('/shape', request);
       setAgentOutput(result.output);
       await loadPdf(result.output);
       clearPlacementTarget(documentId);
@@ -756,7 +1055,18 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [activeDocument, backendPost, beginPlacement, clearPlacementTarget, commentTarget, loadPdf, placementMode, shapeDimensions, shapeKind]);
+  }, [
+    activeDocument,
+    backendPost,
+    beginPlacement,
+    clearPlacementTarget,
+    commentTarget,
+    loadPdf,
+    placementMode,
+    recordNativePreview,
+    shapeDimensions,
+    shapeKind,
+  ]);
 
   const addPdfImage = useCallback(async () => {
     if (!activeDocument) {
@@ -809,14 +1119,39 @@ export default function App() {
         return;
       }
       setBusy(true);
-      try {
-        const result = await backendPost<TextMarkupResponse>(
-          '/text-markup',
-          buildTextMarkupRequest(activeDocument.path, markupText, kind, 'Sparrow'),
-        );
-        setAgentOutput(result.output);
-        await loadPdf(result.output);
-        setStatus(`${describeFileOutput(kind, result.output)}，共 ${result.count} 处。`);
+    try {
+      const request = buildTextMarkupRequest(activeDocument.path, markupText, kind, 'Sparrow');
+      const nativePreview = await previewTextQueryMarkupWithNativeBridge(kind, request.query, {
+        documentId: activeDocument.path,
+        label: `${kind} "${request.query}" in ${activeDocument.title}`,
+        color: request.color,
+      });
+      if (nativePreview.handled) {
+        const count = nativePreview.operationCount ?? nativePreview.rectCount ?? 0;
+        setNativeEditsByDocument((current) => {
+          const previous = current[activeDocument.id];
+          return {
+            ...current,
+            [activeDocument.id]: {
+              batchId: nativePreview.batchId,
+              previewCounts: [...(previous?.previewCounts ?? []), count],
+              redoPreviewCounts: [],
+              clearUndoPreviewCounts: [],
+              redoClearPreviewCounts: [],
+              undoAvailable: nativePreview.undoAvailable ?? true,
+              redoAvailable: nativePreview.redoAvailable ?? false,
+              outputPath: previous?.outputPath,
+            },
+          };
+        });
+        setStatus(`已在 PDF4QT 中预览 ${count} 处 ${kind === 'underline' ? '下划线' : '删除线'}。`);
+        return;
+      }
+
+      const result = await backendPost<TextMarkupResponse>('/text-markup', request);
+      setAgentOutput(result.output);
+      await loadPdf(result.output);
+      setStatus(`${describeFileOutput(kind, result.output)}，共 ${result.count} 处。`);
       } catch (error) {
         setStatus(error instanceof Error ? error.message : String(error));
       } finally {
@@ -1571,6 +1906,54 @@ export default function App() {
     { id: 'privacy', label: 'Privacy', icon: Shield },
   ];
 
+  if (nativeSidePanel) {
+    return (
+      <ErrorBoundary>
+        <div className="native-agent-panel-shell" data-theme={theme}>
+          <NativeSidePanelControls
+            activeDocument={activeDocument}
+            aiAllowed={aiAllowed}
+            busy={busy}
+            nativeCoreStatus={nativeCoreStatus}
+            nativePreviewCount={nativePreviewCount}
+            status={status}
+            undoDisabled={undoDisabled}
+            redoDisabled={redoDisabled}
+            onEnableAi={enableAiForActiveDocument}
+            onHighlightHeadings={highlightHeadings}
+            onUndo={undo}
+            onRedo={redo}
+            onClearPreview={clearPreview}
+            onApplyHighlights={applyHighlights}
+            onExportNativeAgent={exportNativeAgentSession}
+          />
+          <ChatPanel
+            activeDocumentTitle={activeDocument?.title ?? null}
+            activeDocumentContext={activeDocumentContext}
+            analysis={activeDocument?.analysis ?? null}
+            analysisStatus={activeDocument?.analysisStatus ?? 'idle'}
+            workspaceDocuments={workspaceDocuments}
+            aiEnabled={aiAllowed}
+            privacyMode={aiPermissionMode}
+            onPrivacyModeChange={setAiPermissionMode}
+            externalPrompt={pendingAgentPrompt}
+            onExternalPromptConsumed={(id) => {
+              setPendingAgentPrompt((current) => (current?.id === id ? null : current));
+            }}
+            onEnableAi={enableAiForActiveDocument}
+            onAnalyzeDocument={analyzeActiveDocument}
+            onFileOutput={handleFileOutput}
+            onSplitOutput={handleSplitOutput}
+            onFolderOutput={handleFolderOutput}
+            onPathOutput={handlePathOutput}
+            onPreviewHighlights={addHighlightBatch}
+            onTranscriptChange={setChatTranscript}
+          />
+        </div>
+      </ErrorBoundary>
+    );
+  }
+
   return (
     <ErrorBoundary>
       <div
@@ -1645,8 +2028,9 @@ export default function App() {
                   activeDocument={activeDocument}
                   busy={busy}
                   highlights={highlights}
-                  undoDisabled={undoStack.length === 0}
-                  redoDisabled={redoStack.length === 0}
+                  nativePreviewCount={nativePreviewCount}
+                  undoDisabled={undoDisabled}
+                  redoDisabled={redoDisabled}
                   pageEditRanges={pageEditRanges}
                   blankPageInsertAfter={blankPageInsertAfter}
                   blankPageCount={blankPageCount}
@@ -1680,6 +2064,7 @@ export default function App() {
                   onHighlightHeadings={highlightHeadings}
                   onUndo={undo}
                   onRedo={redo}
+                  onClearPreview={clearPreview}
                   onApplyHighlights={applyHighlights}
                   onSetPageEditRanges={setPageEditRanges}
                   onSetBlankPageInsertAfter={setBlankPageInsertAfter}
@@ -1841,31 +2226,11 @@ export default function App() {
           </div>
 
           <div className="viewer-frame">
-            {pdfUrl && backend && activeDocument ? (
-              <PdfViewer
-                url={pdfUrl}
-                token={backend.token}
-                highlights={highlights}
-                searchHighlights={searchHighlights}
-                searchQuery={pdfSearchQuery}
-                searchBusy={pdfSearchBusy}
-                onSearchQueryChange={setPdfSearchQuery}
-                onSearchSubmit={() => void findInActiveDocument()}
-                onSearchClear={clearPdfSearch}
-                commentTarget={commentTarget}
-                targetMode={placementMode}
-                onCommentTargetChange={(target) => {
-                  setCommentTargetsByDocument((current) => ({ ...current, [activeDocument.id]: target }));
-                  setStatus(
-                    `已选择 ${pdfPlacementLabel(placementMode)} 位置：第 ${target.page + 1} 页，${Math.round(
-                      target.x,
-                    )},${Math.round(target.y)}。再次点击对应工具执行。`,
-                  );
-                }}
-              />
-            ) : (
-              <EmptyState onOpen={handleOpenFile} />
-            )}
+          {activeDocument ? (
+            <PdfViewer path={activeDocument.path} />
+          ) : (
+            <EmptyState onOpen={handleOpenFile} />
+          )}
           </div>
         </main>
 
@@ -1897,6 +2262,73 @@ export default function App() {
         </div>
       </div>
     </ErrorBoundary>
+  );
+}
+
+interface NativeSidePanelControlsProps {
+  activeDocument: SparrowDocument | null;
+  aiAllowed: boolean;
+  busy: boolean;
+  nativeCoreStatus: NativePdfCoreStatus | null;
+  nativePreviewCount: number;
+  status: string | null;
+  undoDisabled: boolean;
+  redoDisabled: boolean;
+  onEnableAi: () => void;
+  onHighlightHeadings: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  onClearPreview: () => void;
+  onApplyHighlights: () => void;
+  onExportNativeAgent: () => void;
+}
+
+function NativeSidePanelControls(props: NativeSidePanelControlsProps) {
+  const disabled = !props.activeDocument || props.busy;
+  const nativeStatus = props.nativeCoreStatus ? nativePdfCoreStatusSummary(props.nativeCoreStatus) : 'PDF4QT shell';
+
+  return (
+    <section className="native-side-panel-controls">
+      <div className="native-panel-document">
+        <div className="section-title">PDF4QT Document</div>
+        <h2>{props.activeDocument?.title ?? 'No PDF open'}</h2>
+        <p>{props.activeDocument?.path ?? 'Open a PDF in the native shell.'}</p>
+        {props.activeDocument?.pageCount ? <span>{props.activeDocument.pageCount} pages</span> : null}
+      </div>
+
+      <div className="native-panel-status">
+        <span className={`privacy-pill ${props.aiAllowed ? 'enabled' : ''}`}>
+          {props.aiAllowed ? 'AI enabled' : 'AI off'}
+        </span>
+        <span>{nativeStatus}</span>
+      </div>
+
+      <div className="native-panel-actions">
+        <button onClick={props.onEnableAi} disabled={!props.activeDocument || props.aiAllowed || props.busy}>
+          Enable AI
+        </button>
+        <button onClick={props.onHighlightHeadings} disabled={disabled}>
+          <Highlighter size={15} /> AI Headings
+        </button>
+        <button onClick={props.onUndo} disabled={props.undoDisabled || props.busy}>
+          Undo
+        </button>
+        <button onClick={props.onRedo} disabled={props.redoDisabled || props.busy}>
+          Redo
+        </button>
+        <button onClick={props.onClearPreview} disabled={disabled || props.nativePreviewCount === 0}>
+          Clear {props.nativePreviewCount ? `(${props.nativePreviewCount})` : ''}
+        </button>
+        <button onClick={props.onApplyHighlights} disabled={disabled || props.nativePreviewCount === 0}>
+          Apply {props.nativePreviewCount ? `(${props.nativePreviewCount})` : ''}
+        </button>
+        <button onClick={props.onExportNativeAgent} disabled={disabled}>
+          Export handoff
+        </button>
+      </div>
+
+      {props.status ? <div className="native-panel-message">{props.status}</div> : null}
+    </section>
   );
 }
 
@@ -2077,6 +2509,7 @@ interface ToolsPaneProps {
   activeDocument: SparrowDocument | null;
   busy: boolean;
   highlights: HighlightOperation[];
+  nativePreviewCount: number;
   undoDisabled: boolean;
   redoDisabled: boolean;
   pageEditRanges: string;
@@ -2123,6 +2556,7 @@ interface ToolsPaneProps {
   onHighlightHeadings: () => void;
   onUndo: () => void;
   onRedo: () => void;
+  onClearPreview: () => void;
   onApplyHighlights: () => void;
   onSetPageEditRanges: (value: string) => void;
   onSetBlankPageInsertAfter: (value: string) => void;
@@ -2200,6 +2634,7 @@ interface ToolsPaneProps {
 function ToolsPane(props: ToolsPaneProps) {
   const disabled = !props.activeDocument || props.busy;
   const conversionDisabled = props.busy;
+  const applyCount = props.nativePreviewCount || props.highlights.length;
   return (
     <div className="sidebar-content">
       <section className="sidebar-section">
@@ -2219,8 +2654,11 @@ function ToolsPane(props: ToolsPaneProps) {
           <button onClick={props.onRedo} disabled={props.redoDisabled || props.busy}>
             Redo
           </button>
-          <button onClick={props.onApplyHighlights} disabled={disabled || props.highlights.length === 0}>
-            Apply {props.highlights.length ? `(${props.highlights.length})` : ''}
+          <button onClick={props.onClearPreview} disabled={disabled || applyCount === 0}>
+            Clear {applyCount ? `(${applyCount})` : ''}
+          </button>
+          <button onClick={props.onApplyHighlights} disabled={disabled || applyCount === 0}>
+            Apply {applyCount ? `(${applyCount})` : ''}
           </button>
         </div>
       </section>
@@ -2687,9 +3125,9 @@ function ToolsPane(props: ToolsPaneProps) {
         <div className="section-title">Native Core</div>
         <p>{props.nativeCoreStatus ? nativePdfCoreStatusSummary(props.nativeCoreStatus) : 'Checking PDF core...'}</p>
         <p className="native-core-secondary">
-          {props.nativeCoreStatus?.mode === 'pdf4qt-ready'
-            ? 'PDF4QT is active for supported native commands; page viewing still uses pdf.js.'
-            : 'Current runtime stays on pdf.js/PyMuPDF until the PDF4QT host bridge is available.'}
+        {props.nativeCoreStatus?.mode === 'pdf4qt-ready'
+          ? 'PDF4QT is active for page rendering and supported native commands.'
+          : 'PDF4QT rendering is unavailable until the native host bridge is configured.'}
         </p>
       </section>
     </div>

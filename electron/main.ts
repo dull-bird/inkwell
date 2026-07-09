@@ -24,6 +24,7 @@ import { AgentSession, type AgentEvent, type AgentKind, type AgentPromptOptions 
 import { resolveBackendProcessConfig } from './backendProcessPath.js';
 import { NativePdfHostClient, type NativePdfCommandName } from './nativePdfBridge.js';
 import { PDF4QT_HOST_ENV, resolveNativePdfHostPath } from './nativePdfHostPath.js';
+import { INKWELL_NATIVE_SHELL_ENV, resolveNativeShellPath } from './nativeShellPath.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -79,7 +80,7 @@ async function getNativePdfCoreStatus() {
       if (nativePdfHostHasLinkedAdapter(status)) {
         return {
           mode: 'pdf4qt-ready',
-          renderer: 'pdf.js',
+          renderer: 'PDF4QT',
           writeEngine: 'PyMuPDF',
           pdf4qt: { available: true, envVar: PDF4QT_HOST_ENV, hostPath: host.hostPath },
           message: 'PDF4QT native command bridge ready for supported commands.',
@@ -87,15 +88,15 @@ async function getNativePdfCoreStatus() {
       }
       return {
         mode: 'pdf4qt-missing',
-        renderer: 'pdf.js',
+        renderer: 'unavailable',
         writeEngine: 'PyMuPDF',
         pdf4qt: { available: false, envVar: PDF4QT_HOST_ENV, hostPath: host.hostPath },
-        message: 'Native PDF host found, but the PDF4QT adapter is not linked. Falling back to pdf.js and PyMuPDF.',
+        message: 'Native PDF host found, but the PDF4QT adapter is not linked. Native rendering is unavailable.',
       };
     } catch (error) {
       return {
         mode: 'pdf4qt-missing',
-        renderer: 'pdf.js',
+        renderer: 'unavailable',
         writeEngine: 'PyMuPDF',
         pdf4qt: { available: false, envVar: PDF4QT_HOST_ENV, hostPath: host.hostPath },
         message: `Native PDF host is unavailable: ${error instanceof Error ? error.message : String(error)}`,
@@ -105,15 +106,15 @@ async function getNativePdfCoreStatus() {
   if (host.source === 'environment' && host.hostPath) {
     return {
       mode: 'pdf4qt-missing',
-      renderer: 'pdf.js',
+      renderer: 'unavailable',
       writeEngine: 'PyMuPDF',
       pdf4qt: { available: false, envVar: PDF4QT_HOST_ENV, hostPath: host.hostPath },
       message: host.message,
     };
   }
   return {
-    mode: 'pdfjs-fallback',
-    renderer: 'pdf.js',
+    mode: 'pdf4qt-unavailable',
+    renderer: 'unavailable',
     writeEngine: 'PyMuPDF',
     pdf4qt: { available: false, envVar: PDF4QT_HOST_ENV },
     message: host.message,
@@ -146,6 +147,38 @@ function getNativePdfHostClient(): NativePdfHostClient {
   }
   if (!nativePdfHostClient) nativePdfHostClient = new NativePdfHostClient(host.hostPath);
   return nativePdfHostClient;
+}
+
+function resolveCurrentNativeShell() {
+  return resolveNativeShellPath({
+    envShellPath: process.env[INKWELL_NATIVE_SHELL_ENV],
+    resourcesPath: process.resourcesPath,
+    platform: process.platform,
+    arch: process.arch,
+    exists: existsSync,
+  });
+}
+
+function launchNativeShell(pdfPath?: string | null): string {
+  const shell = resolveCurrentNativeShell();
+  if (!shell.available || !shell.shellPath) throw new Error(shell.message);
+
+  const args = pdfPath ? [pdfPath] : [];
+  if (process.platform === 'darwin' && shell.shellPath.endsWith('.app')) {
+    const child = spawn('open', ['-a', shell.shellPath, ...(args.length ? ['--args', ...args] : [])], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    return shell.shellPath;
+  }
+
+  const child = spawn(shell.shellPath, args, {
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+  return shell.shellPath;
 }
 
 function findAvailablePort(preferred: number): Promise<number> {
@@ -281,6 +314,34 @@ function collectWorkspaceFiles(root: string): string[] {
   return Array.from(new Set(found)).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function attachNativePageImageUrls(method: NativePdfCommandName, result: unknown): unknown {
+  if (method !== 'export_pages_as_images' || !isRecord(result)) return result;
+
+  const files = Array.isArray(result.files) ? result.files.filter((file): file is string => typeof file === 'string') : [];
+  const pages = Array.isArray(result.pages) ? result.pages : [];
+  return {
+    ...result,
+    file_urls: files.map(renderedFileUrl),
+    pages: pages.map((page, index) => {
+      if (!isRecord(page)) return page;
+      const path = typeof page.path === 'string' ? page.path : files[index];
+      if (!path) return page;
+      return { ...page, path, url: renderedFileUrl(path) };
+    }),
+  };
+}
+
+function renderedFileUrl(path: string): string {
+  const url = new URL(`http://127.0.0.1:${backendPort}/pdf`);
+  url.searchParams.set('path', path);
+  url.searchParams.set('token', backendToken);
+  return url.toString();
+}
+
 function sanitizeExportName(name: string): string {
   const cleaned = name
     .replace(/\.[^.]+$/, '')
@@ -344,8 +405,10 @@ ipcMain.handle('app:getBackendToken', () => backendToken);
 ipcMain.handle('app:getNativePdfCoreStatus', () => getNativePdfCoreStatus());
 ipcMain.handle(
   'nativePdf:command',
-  async (_event, method: NativePdfCommandName, params: Record<string, unknown> = {}) =>
-    getNativePdfHostClient().execute(method, params),
+  async (_event, method: NativePdfCommandName, params: Record<string, unknown> = {}) => {
+    const result = await getNativePdfHostClient().execute(method, params);
+    return attachNativePageImageUrls(method, result);
+  },
 );
 
 ipcMain.handle('app:setCurrentFile', (_event, path: string) => {
@@ -358,6 +421,12 @@ ipcMain.handle('app:openPath', async (_event, path: string) => {
   const error = await shell.openPath(path);
   if (error) throw new Error(error);
   return path;
+});
+
+ipcMain.handle('app:openNativeShell', (_event, path?: string) => {
+  const targetPath = path || currentPdfPath;
+  if (targetPath && !existsSync(targetPath)) throw new Error(`Path does not exist: ${targetPath}`);
+  return launchNativeShell(targetPath);
 });
 
 ipcMain.handle(

@@ -31,8 +31,69 @@ The host returns one line with the same `id` and either `result` or `error`.
 - Electron uses `host_status` to distinguish a runnable scaffold host from a
   host with the real PDF4QT adapter linked.
 
-## Fallback
+## Runtime Availability
 
-If no bundled host exists and `INKWELL_PDF4QT_HOST` is missing or points to a
-non-existent executable, Sparrow continues using pdf.js rendering and PyMuPDF
-writes. The UI reports this explicitly in the Native Core panel.
+If no bundled host exists, or `INKWELL_PDF4QT_HOST` points to a non-existent
+executable, native PDF rendering is unavailable. The product should surface that
+state explicitly instead of silently replacing the PDF4QT surface with a
+separate web PDF renderer. PDF writes can still use PyMuPDF while the
+corresponding PDF4QT operation is not yet implemented.
+
+## Native Shell WebChannel
+
+The Qt shell exposes an in-process bridge object to the optional agent WebView:
+
+- object name: `pdfOperationBridge`
+- transport: Qt WebChannel
+- implemented now: `getCurrentDocumentJson()`, `previewOperationsJson()` for
+`highlight`, `underline`, and `strikeout` text markup operations plus
+`freeText`, `stamp`, and `shape` standard annotation operations,
+`clearPreviewJson()`, `applyOperationsJson()`, `undoJson()`, and `redoJson()`
+
+`getCurrentDocumentJson()` reads from `PDFProgramController::getDocument()` and
+the document catalog page count. Text markup preview creates standard PDF4QT
+Highlight, Underline, or StrikeOut annotations through `PDFDocumentModifier`
+and `PDFDocumentBuilder`; standard annotation preview creates FreeText, Stamp,
+Square, Circle, or Line annotations through the same modifier path. The bridge
+then hands the modified document back through
+`PDFProgramController::onDocumentModified()`. Text markup preview can provide
+explicit rects or a text `query`; query operations are resolved inside the
+native bridge with PDF4QT `PDFTextLayoutGenerator` and `PDFTextFlow::find`,
+then converted to the same standard annotations.
+
+`undoJson()` and `redoJson()` resolve the live `PDFUndoRedoManager` owned by the
+program controller and call `doUndo()` / `doRedo()`, so agent-triggered previews
+and manual PDF4QT edits share one undo stack. `applyOperationsJson()` writes the
+current PDF4QT document with `PDFDocumentWriter` to a unique sibling
+`*_applied.pdf` file and refuses to overwrite the source path. It does not write
+during preview.
+
+`clearPreviewJson()` removes tracked preview annotations from the current PDF4QT
+document through `PDFDocumentBuilder::removeAnnotation()`. Passing
+an empty batch id clears all active preview batches; passing a batch id clears
+that specific batch. This is a normal PDF4QT document modification, so it enters
+the same undo/redo stack without rolling back unrelated later edits.
+
+## React Agent Client
+
+The React side panel uses `src/pdfOperationBridge.ts` as its single PDF bridge
+client. When it runs inside the Qt WebView, the client discovers
+`pdfOperationBridge` through Qt WebChannel (`qrc:///qtwebchannel/qwebchannel.js`).
+
+The staged Qt shell loads the bundled React panel as a local file with
+`?surface=native-panel`; macOS staging places it under
+`Contents/Resources/agent-panel/`, and other staging layouts place it next to
+the native executable under `agent-panel/`. `INKWELL_AGENT_PANEL_URL` can
+override this for development or diagnostics. In surface mode, React does not
+render the old PDF viewer/handoff page. It renders side-panel controls plus
+`ChatPanel`, and it uses `getCurrentDocumentJson()` to derive the active PDF
+title, path, and page count from the live PDF4QT document.
+
+Agent text markup tool results, manual underline/strikeout query previews, and
+manual free text/stamp/shape annotation previews go to `previewOperationsJson()`.
+Clear, apply, undo, and redo controls go through
+the same bridge methods. If no Qt WebChannel transport exists, the Electron
+migration prototype can still fall back to its legacy React highlight preview
+state or backend text-markup output. Those fallbacks are development bridges
+only; the product path is Qt WebView -> `pdfOperationBridge` -> PDF4QT document
+modification.

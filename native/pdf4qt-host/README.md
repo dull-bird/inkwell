@@ -9,7 +9,8 @@ Current state:
 - The binary name is `inkwell-pdf4qt-host`.
 - The executable accepts `--stdio-json`.
 - The linked PDF4QT command slice supports `host_status`, `open_document`,
-  `document_info`, `find_text`, `preview_highlights`, and `export_text`.
+  `document_info`, `find_text`, `preview_highlights`, `export_pages_as_images`,
+  and `export_text`.
 - Remaining edit commands are intentionally reported as not implemented until
   their PDF4QT operations are wired.
 

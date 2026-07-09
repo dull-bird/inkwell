@@ -16,12 +16,15 @@ export function createBrowserPreviewElectronApi(): ElectronAPI {
     getBackendToken: async () => '',
     setCurrentFile: async () => {},
     openPath: async (path) => path,
+    openNativeShell: async (path) => {
+      throw new Error(`Native Qt shell is not available in browser preview mode${path ? ` for ${path}` : ''}.`);
+    },
     getNativePdfCoreStatus: async () => ({
-      mode: 'pdfjs-fallback',
-      renderer: 'pdf.js',
+      mode: 'pdf4qt-unavailable',
+      renderer: 'unavailable',
       writeEngine: 'PyMuPDF',
       pdf4qt: { available: false, envVar: 'INKWELL_PDF4QT_HOST' },
-      message: 'PDF4QT host not configured. Set INKWELL_PDF4QT_HOST to test the native core bridge.',
+      message: 'PDF4QT host not configured. Set INKWELL_PDF4QT_HOST to enable native rendering.',
     }),
     runNativePdfCommand: async () => {
       throw new Error('Native PDF host is not available in browser preview mode.');

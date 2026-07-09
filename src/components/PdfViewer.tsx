@@ -1,14 +1,5 @@
-import { useMemo, useState, type MouseEvent } from 'react';
-import { Search, X } from 'lucide-react';
-import { Document, Page, pdfjs } from 'react-pdf';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import { clientPointToPdfPoint } from '../pdfCoordinates';
-import { countHighlightRects } from '../pdfHighlights';
-import { isPdfPlacementActive, type PdfPlacementMode } from '../pdfPlacementMode';
-import 'react-pdf/dist/Page/TextLayer.css';
-import 'react-pdf/dist/Page/AnnotationLayer.css';
-
-pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+import { useState } from 'react';
+import { ExternalLink } from 'lucide-react';
 
 export interface PdfRect {
   x0: number;
@@ -33,166 +24,40 @@ export interface CommentTarget {
 }
 
 interface PdfViewerProps {
-  url: string;
-  token: string;
-  highlights: HighlightOperation[];
-  searchHighlights?: HighlightOperation[];
-  searchQuery?: string;
-  searchBusy?: boolean;
-  commentTarget?: CommentTarget | null;
-  targetMode?: PdfPlacementMode;
-  onSearchQueryChange?: (query: string) => void;
-  onSearchSubmit?: () => void;
-  onSearchClear?: () => void;
-  onCommentTargetChange?: (target: CommentTarget) => void;
+  path: string;
 }
 
-export default function PdfViewer({
-  url,
-  token,
-  highlights,
-  searchHighlights = [],
-  searchQuery = '',
-  searchBusy = false,
-  commentTarget,
-  targetMode = 'none',
-  onSearchQueryChange,
-  onSearchSubmit,
-  onSearchClear,
-  onCommentTargetChange,
-}: PdfViewerProps) {
-  const [scale, setScale] = useState(1);
-  const [numPages, setNumPages] = useState(0);
-  const file = useMemo(() => ({ url }), [url]);
-  const options = useMemo(() => ({ httpHeaders: { 'X-Inkwell-Token': token } }), [token]);
-  const searchMatchCount = countHighlightRects(searchHighlights);
-  const pickingTarget = isPdfPlacementActive(targetMode);
+export default function PdfViewer({ path }: PdfViewerProps) {
+  const [status, setStatus] = useState<string | null>(null);
+
+  const openNativeShell = async () => {
+    setStatus('Opening native PDF4QT shell...');
+    try {
+      const shellPath = await window.electronAPI.openNativeShell(path);
+      setStatus(`Opened in native shell: ${shellPath}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  };
 
   return (
-    <div className="pdf-viewer">
-      <div className="pdf-toolbar">
-        <button onClick={() => setScale((s) => Math.max(0.5, +(s - 0.1).toFixed(2)))}>-</button>
-        <span>{Math.round(scale * 100)}%</span>
-        <button onClick={() => setScale((s) => Math.min(3, +(s + 0.1).toFixed(2)))}>+</button>
-        <label className="pdf-search-field">
-          <Search size={14} />
-          <input
-            value={searchQuery}
-            disabled={!onSearchSubmit || searchBusy}
-            onChange={(event) => onSearchQueryChange?.(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                onSearchSubmit?.();
-              }
-              if (event.key === 'Escape') {
-                event.preventDefault();
-                onSearchClear?.();
-              }
-            }}
-            placeholder="Find in PDF"
-          />
-        </label>
-        <button
-          onClick={onSearchSubmit}
-          disabled={!onSearchSubmit || searchBusy || !searchQuery.trim()}
-          title="Find in PDF"
-          aria-label="Find in PDF"
-        >
-          <Search size={14} />
+    <div className="pdf-viewer native-surface-handoff">
+      <div className="native-surface-panel">
+        <div>
+          <div className="section-title">PDF Surface</div>
+          <h2>Open this document in the native PDF4QT shell</h2>
+          <p>
+            Inkwell's target PDF viewer/editor is the Qt/PDF4QT native shell. React should host workflow and
+            agent UI, not draw a parallel PDF view.
+          </p>
+        </div>
+        <button className="primary-button" onClick={() => void openNativeShell()}>
+          <ExternalLink size={16} />
+          Open Native Shell
         </button>
-        <button
-          onClick={onSearchClear}
-          disabled={!onSearchClear || searchBusy || (!searchQuery && searchMatchCount === 0)}
-          title="Clear search"
-          aria-label="Clear search"
-        >
-          <X size={14} />
-        </button>
-        <span className="pdf-toolbar-status">
-          {searchBusy
-            ? 'Searching...'
-            : searchMatchCount > 0
-              ? `${searchMatchCount} matches`
-              : highlights.length > 0
-                ? `${highlights.length} preview highlights`
-                : 'Ready'}
-        </span>
+        <div className="native-surface-path">{path}</div>
+        {status ? <div className="native-surface-status">{status}</div> : null}
       </div>
-      <div className="pdf-scroll">
-        <Document file={file} options={options} onLoadSuccess={(pdf) => setNumPages(pdf.numPages)}>
-          {Array.from({ length: numPages }, (_, index) => {
-            const pageNumber = index + 1;
-            const pageHighlights = highlights.filter((highlight) => highlight.page === index);
-            const pageSearchHighlights = searchHighlights.filter((highlight) => highlight.page === index);
-            const pageCommentTarget = pickingTarget && commentTarget?.page === index ? commentTarget : null;
-            const handleClick = (event: MouseEvent<HTMLDivElement>) => {
-              if (!pickingTarget) return;
-              const point = clientPointToPdfPoint(event, event.currentTarget.getBoundingClientRect(), scale);
-              onCommentTargetChange?.({ page: index, x: point.x, y: point.y });
-            };
-            return (
-              <div className={`pdf-page-wrap ${pickingTarget ? 'picking-target' : ''}`} key={pageNumber} onClick={handleClick}>
-                <Page pageNumber={pageNumber} scale={scale} renderAnnotationLayer renderTextLayer />
-                <HighlightOverlay highlights={pageSearchHighlights} scale={scale} variant="search" />
-                <HighlightOverlay highlights={pageHighlights} scale={scale} />
-                {pageCommentTarget && <CommentTargetOverlay target={pageCommentTarget} scale={scale} />}
-              </div>
-            );
-          })}
-        </Document>
-      </div>
-    </div>
-  );
-}
-
-function CommentTargetOverlay({ target, scale }: { target: CommentTarget; scale: number }) {
-  return (
-    <div
-      className="comment-target"
-      style={{
-        left: target.x * scale,
-        top: target.y * scale,
-      }}
-      title={`Comment at page ${target.page + 1}, ${Math.round(target.x)}, ${Math.round(target.y)}`}
-    >
-      小
-    </div>
-  );
-}
-
-function HighlightOverlay({
-  highlights,
-  scale,
-  variant = 'preview',
-}: {
-  highlights: HighlightOperation[];
-  scale: number;
-  variant?: 'preview' | 'search';
-}) {
-  return (
-    <div className="highlight-overlay">
-      {highlights.flatMap((highlight) =>
-        highlight.rects.map((rect, index) => {
-          const [r, g, b] = highlight.color;
-          return (
-            <div
-              key={`${highlight.id}-${index}`}
-              title={highlight.text}
-              className={variant === 'search' ? 'search-highlight' : 'preview-highlight'}
-              style={{
-                left: rect.x0 * scale,
-                top: rect.y0 * scale,
-                width: Math.max(1, (rect.x1 - rect.x0) * scale),
-                height: Math.max(1, (rect.y1 - rect.y0) * scale),
-                background: `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${
-                  highlight.opacity ?? 0.25
-                })`,
-              }}
-            />
-          );
-        }),
-      )}
     </div>
   );
 }

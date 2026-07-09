@@ -77,6 +77,7 @@ export interface ElectronAPI {
   getBackendToken: () => Promise<string>;
   setCurrentFile: (path: string) => Promise<void>;
   openPath: (path: string) => Promise<string>;
+  openNativeShell: (path?: string) => Promise<string>;
   getNativePdfCoreStatus: () => Promise<NativePdfCoreStatus>;
   runNativePdfCommand: (method: NativePdfCommandName, params?: Record<string, unknown>) => Promise<unknown>;
   exportNativeAgentSession: (

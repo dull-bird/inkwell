@@ -2,10 +2,16 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QDir>
 #include <QJsonArray>
+#include <QSize>
 #include <QTransform>
+#include <QUuid>
 
 #ifdef INKWELL_ENABLE_PDF4QT_ADAPTER
+#include <QImageWriter>
+#include <QObject>
+
 #include "pdfcms.h"
 #include "pdfconstants.h"
 #include "pdfcatalog.h"
@@ -291,6 +297,25 @@ PageIndicesResult pageIndicesFromParams(const pdf::PDFCatalog* catalog, const QJ
     return result;
 }
 
+QString imageOutputDirFromParams(const QJsonObject& params) {
+    const QString requested = params.value("output_dir").toString().trimmed();
+    if (!requested.isEmpty()) {
+        return requested;
+    }
+
+    const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    return QDir(QDir::tempPath()).filePath(QStringLiteral("inkwell-pdf4qt-render-%1").arg(id));
+}
+
+int imageDpiFromParams(const QJsonObject& params) {
+    return params.value("dpi").toInt(144);
+}
+
+QSize rasterSizeForPage(const pdf::PDFPage* page, int dpi) {
+    const QSizeF size = page->getRotatedMediaBox().size() * pdf::PDF_POINT_TO_INCH * dpi;
+    return QSize(std::max(1, size.toSize().width()), std::max(1, size.toSize().height()));
+}
+
 pdf::PDFTextLayout textLayoutForPage(
     const pdf::PDFPage* page,
     pdf::PDFDocument& document,
@@ -391,6 +416,121 @@ Pdf4qtAdapterResponse findTextInDocument(
     result.insert("count", matches.size());
     result.insert("matches", matches);
     result.insert("operations", operations);
+    result.insert("engine", "PDF4QT");
+    return makeResult(result);
+}
+
+Pdf4qtAdapterResponse exportPagesAsImagesFromDocument(const QString& path, const QJsonObject& params) {
+    const int dpi = imageDpiFromParams(params);
+    if (dpi < 24 || dpi > 600) {
+        return makeError(-32602, "Image export DPI must be between 24 and 600.");
+    }
+
+    ReadDocumentResult read = readDocument(path);
+    if (!read.ok) {
+        return makeError(read.errorCode, read.errorMessage);
+    }
+
+    pdf::PDFDocument& document = read.document;
+    const pdf::PDFCatalog* catalog = document.getCatalog();
+    PageIndicesResult pages = pageIndicesFromParams(catalog, params);
+    if (!pages.ok) {
+        return makeError(pages.errorCode, pages.errorMessage);
+    }
+
+    const QString outputDir = imageOutputDirFromParams(params);
+    QDir dir(outputDir);
+    if (!dir.exists() && !dir.mkpath(QStringLiteral("."))) {
+        return makeError(-32012, QString("Cannot create image output directory: %1").arg(outputDir));
+    }
+
+    pdf::PDFOptionalContentActivity optionalContentActivity(&document, pdf::OCUsage::Export, nullptr);
+    pdf::PDFCMSManager cmsManager(nullptr);
+    cmsManager.setDocument(&document);
+    pdf::PDFMeshQualitySettings meshQualitySettings;
+    pdf::PDFFontCache fontCache(pdf::DEFAULT_FONT_CACHE_LIMIT, pdf::DEFAULT_REALIZED_FONT_CACHE_LIMIT);
+    pdf::PDFModifiedDocument modifiedDocument(&document, &optionalContentActivity);
+    fontCache.setDocument(modifiedDocument);
+    fontCache.setCacheShrinkEnabled(nullptr, false);
+
+    pdf::PDFRenderer::Features features(
+        pdf::PDFRenderer::Antialiasing |
+        pdf::PDFRenderer::TextAntialiasing |
+        pdf::PDFRenderer::SmoothImages |
+        pdf::PDFRenderer::ClipToCropBox |
+        pdf::PDFRenderer::DisplayAnnotations
+    );
+
+    pdf::PDFRasterizerPool rasterizerPool(
+        &document,
+        &fontCache,
+        &cmsManager,
+        &optionalContentActivity,
+        features,
+        meshQualitySettings,
+        1,
+        pdf::RendererEngine::QPainter,
+        nullptr
+    );
+
+    QString renderError;
+    QObject renderErrorHolder;
+    QObject::connect(
+        &rasterizerPool,
+        &pdf::PDFRasterizerPool::renderError,
+        &renderErrorHolder,
+        [&renderError](pdf::PDFInteger pageIndex, pdf::PDFRenderError error) {
+            if (renderError.isEmpty()) {
+                renderError = QString("PDF4QT render error on page %1: %2").arg(pageIndex + 1).arg(error.message);
+            }
+        },
+        Qt::DirectConnection
+    );
+
+    auto imageSizeGetter = [dpi](const pdf::PDFPage* page) -> QSize {
+        return rasterSizeForPage(page, dpi);
+    };
+
+    QJsonArray files;
+    QJsonArray renderedPages;
+    auto processImage = [&dir, &files, &renderedPages, &renderError, dpi](pdf::PDFRenderedPageImage& renderedPage) {
+        if (!renderError.isEmpty()) {
+            return;
+        }
+
+        const QString fileName = dir.filePath(QString("page_%1.png").arg(static_cast<int>(renderedPage.pageIndex) + 1, 4, 10, QChar('0')));
+        QImageWriter writer(fileName, "png");
+        if (!writer.write(renderedPage.pageImage)) {
+            renderError = QString("Cannot write page image to %1: %2").arg(fileName).arg(writer.errorString());
+            return;
+        }
+
+        files.append(fileName);
+
+        QJsonObject page;
+        page.insert("page", static_cast<int>(renderedPage.pageIndex));
+        page.insert("page_number", static_cast<int>(renderedPage.pageIndex) + 1);
+        page.insert("path", fileName);
+        page.insert("width", renderedPage.pageImage.width());
+        page.insert("height", renderedPage.pageImage.height());
+        page.insert("dpi", dpi);
+        renderedPages.append(page);
+    };
+
+    rasterizerPool.render(pages.indices, imageSizeGetter, processImage, nullptr);
+    fontCache.setCacheShrinkEnabled(nullptr, true);
+
+    if (!renderError.isEmpty()) {
+        return makeError(-32013, renderError);
+    }
+
+    QJsonObject result;
+    result.insert("path", path);
+    result.insert("output_dir", outputDir);
+    result.insert("files", files);
+    result.insert("pages", renderedPages);
+    result.insert("page_count", renderedPages.size());
+    result.insert("dpi", dpi);
     result.insert("engine", "PDF4QT");
     return makeResult(result);
 }
@@ -506,6 +646,9 @@ Pdf4qtAdapterResponse Pdf4qtAdapter::handle(const QString& method, const QJsonOb
     if (method == "preview_highlights") {
         return previewHighlights(params);
     }
+    if (method == "export_pages_as_images") {
+        return exportPagesAsImages(params);
+    }
     if (method == "export_text") {
         return exportText(params);
     }
@@ -559,6 +702,12 @@ Pdf4qtAdapterResponse Pdf4qtAdapter::previewHighlights(const QJsonObject& params
         response.result.insert("preview", true);
     }
     return response;
+}
+
+Pdf4qtAdapterResponse Pdf4qtAdapter::exportPagesAsImages(const QJsonObject& params) {
+    const QString requestedPath = params.value("path").toString();
+    const QString path = requestedPath.trimmed().isEmpty() ? currentPath : requestedPath;
+    return exportPagesAsImagesFromDocument(path, params);
 }
 
 Pdf4qtAdapterResponse Pdf4qtAdapter::exportText(const QJsonObject& params) {

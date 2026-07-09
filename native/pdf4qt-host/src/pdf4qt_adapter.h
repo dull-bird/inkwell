@@ -21,6 +21,7 @@ private:
     Pdf4qtAdapterResponse documentInfo(const QJsonObject& params);
     Pdf4qtAdapterResponse findText(const QJsonObject& params);
     Pdf4qtAdapterResponse previewHighlights(const QJsonObject& params);
+    Pdf4qtAdapterResponse exportPagesAsImages(const QJsonObject& params);
     Pdf4qtAdapterResponse exportText(const QJsonObject& params);
     QString currentPath;
 #endif

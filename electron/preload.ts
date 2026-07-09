@@ -5,10 +5,10 @@ import type { NativePdfCommandName } from '../shared/native-pdf-commands';
 export type { AgentEvent, AgentKind, AgentPromptOptions };
 
 type PdfSessionExportMode = 'none' | 'reference' | 'copy';
-type NativePdfCoreMode = 'pdfjs-fallback' | 'pdf4qt-missing' | 'pdf4qt-ready';
+type NativePdfCoreMode = 'pdf4qt-unavailable' | 'pdf4qt-missing' | 'pdf4qt-ready';
 interface NativePdfCoreStatus {
   mode: NativePdfCoreMode;
-  renderer: 'pdf.js';
+  renderer: 'PDF4QT' | 'unavailable';
   writeEngine: 'PyMuPDF';
   pdf4qt: {
     available: boolean;
@@ -43,6 +43,7 @@ export interface ElectronAPI {
   getBackendToken: () => Promise<string>;
   setCurrentFile: (path: string) => Promise<void>;
   openPath: (path: string) => Promise<string>;
+  openNativeShell: (path?: string) => Promise<string>;
   getNativePdfCoreStatus: () => Promise<NativePdfCoreStatus>;
   runNativePdfCommand: (method: NativePdfCommandName, params?: Record<string, unknown>) => Promise<unknown>;
   exportNativeAgentSession: (
@@ -63,6 +64,7 @@ const api: ElectronAPI = {
   getBackendToken: () => ipcRenderer.invoke('app:getBackendToken'),
   setCurrentFile: (path) => ipcRenderer.invoke('app:setCurrentFile', path),
   openPath: (path) => ipcRenderer.invoke('app:openPath', path),
+  openNativeShell: (path) => ipcRenderer.invoke('app:openNativeShell', path),
   getNativePdfCoreStatus: () => ipcRenderer.invoke('app:getNativePdfCoreStatus'),
   runNativePdfCommand: (method, params) => ipcRenderer.invoke('nativePdf:command', method, params),
   exportNativeAgentSession: (request) => ipcRenderer.invoke('session:exportNativeAgent', request),

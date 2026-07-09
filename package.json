@@ -10,7 +10,8 @@
   "scripts": {
     "dev": "node scripts/dev-server.mjs",
     "test": "node scripts/run-tests.mjs",
-    "build": "tsc && vite build && npm run build:electron",
+    "build": "npm run build:renderer && npm run build:electron",
+    "build:renderer": "tsc && vite build",
     "build:electron": "tsc -p electron/tsconfig.json",
     "preview": "vite preview",
     "electron:preview": "npm run build && electron .",
@@ -23,11 +24,16 @@
     "package:linux:full": "npm run bundle:runtimes && npm run package:linux",
     "bundle:runtimes": "npm run native:package && npm run backend:bundle",
     "native:doctor": "node scripts/native-doctor.mjs",
+    "native:deps": "node scripts/install-native-deps.mjs",
     "native:configure": "node scripts/configure-native-host.mjs",
     "native:configure:pdf4qt": "node scripts/configure-native-host.mjs --pdf4qt",
     "native:build": "cmake --build native/build/pdf4qt-host --config Release",
     "native:stage": "node scripts/stage-native-host.mjs",
     "native:package": "npm run native:configure && npm run native:build && npm run native:stage",
+    "native:shell:configure": "node scripts/configure-native-shell.mjs",
+    "native:shell:build": "cmake --build native/build/inkwell-shell --config Release",
+    "native:shell:stage": "node scripts/stage-native-shell.mjs",
+    "native:shell:package": "npm run build:renderer && npm run native:shell:configure && npm run native:shell:build && npm run native:shell:stage",
     "backend:bundle": "node scripts/bundle-backend.mjs",
     "backend:install": "cd backend && /usr/bin/python3 -m pip install -e .",
     "backend:dev": "cd backend && /usr/bin/python3 -m inkwell.server"
@@ -101,11 +107,9 @@
     "@mcpc-tech/acp-ai-provider": "^0.3.3",
     "ai": "^6.0.0",
     "lucide-react": "^0.468.0",
-    "pdfjs-dist": "^5.4.296",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
-    "react-pdf": "^10.4.1",
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {

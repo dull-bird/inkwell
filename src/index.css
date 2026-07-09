@@ -666,6 +666,56 @@ select:disabled {
   overflow: hidden;
 }
 
+.native-surface-handoff {
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--surface-soft);
+}
+
+.native-surface-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(560px, 100%);
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.native-surface-panel h2 {
+  margin-top: 6px;
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.native-surface-panel p {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.native-surface-panel .primary-button {
+  align-self: flex-start;
+  gap: 8px;
+  padding: 0 14px;
+}
+
+.native-surface-path,
+.native-surface-status {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.native-surface-status {
+  color: var(--text);
+}
+
 .pdf-toolbar {
   display: flex;
   align-items: center;
@@ -736,12 +786,38 @@ select:disabled {
   position: relative;
   width: fit-content;
   margin: 0 auto 18px;
+  overflow: hidden;
+  flex: 0 0 auto;
   background: white;
   box-shadow: var(--shadow);
 }
 
 .pdf-page-wrap.picking-target {
   cursor: crosshair;
+}
+
+.pdf-page-image {
+  display: block;
+  user-select: none;
+  pointer-events: none;
+}
+
+.pdf-render-placeholder,
+.pdf-render-error {
+  width: min(520px, calc(100% - 32px));
+  margin: 28px auto;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.pdf-render-error {
+  border-color: color-mix(in srgb, var(--danger) 42%, var(--border));
+  color: var(--danger);
 }
 
 .highlight-overlay {
@@ -782,4 +858,85 @@ select:disabled {
   font-weight: 800;
   pointer-events: none;
   box-shadow: 0 5px 12px rgba(0, 0, 0, 0.22);
+}
+
+.native-agent-panel-shell {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  height: 100vh;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.native-side-panel-controls {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-raised);
+}
+
+.native-panel-document h2 {
+  margin: 2px 0;
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.native-panel-document p {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.native-panel-document span,
+.native-panel-status,
+.native-panel-message {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.native-panel-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.native-panel-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.native-panel-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.native-panel-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.native-agent-panel-shell .sparrow-agent-panel {
+  min-height: 0;
+  border-left: 0;
 }

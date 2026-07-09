@@ -1,10 +1,10 @@
 export const PDF4QT_HOST_ENV = 'INKWELL_PDF4QT_HOST';
 
-export type NativePdfCoreMode = 'pdfjs-fallback' | 'pdf4qt-missing' | 'pdf4qt-ready';
+export type NativePdfCoreMode = 'pdf4qt-unavailable' | 'pdf4qt-missing' | 'pdf4qt-ready';
 
 export interface NativePdfCoreStatus {
   mode: NativePdfCoreMode;
-  renderer: 'pdf.js';
+  renderer: 'PDF4QT' | 'unavailable';
   writeEngine: 'PyMuPDF';
   pdf4qt: {
     available: boolean;
@@ -26,7 +26,7 @@ export function resolveNativePdfCoreStatus({
   if (hostPath && hostExists) {
     return {
       mode: 'pdf4qt-ready',
-      renderer: 'pdf.js',
+      renderer: 'PDF4QT',
       writeEngine: 'PyMuPDF',
       pdf4qt: {
         available: true,
@@ -40,7 +40,7 @@ export function resolveNativePdfCoreStatus({
   if (hostPath && !hostExists) {
     return {
       mode: 'pdf4qt-missing',
-      renderer: 'pdf.js',
+      renderer: 'unavailable',
       writeEngine: 'PyMuPDF',
       pdf4qt: {
         available: false,
@@ -52,14 +52,14 @@ export function resolveNativePdfCoreStatus({
   }
 
   return {
-    mode: 'pdfjs-fallback',
-    renderer: 'pdf.js',
+    mode: 'pdf4qt-unavailable',
+    renderer: 'unavailable',
     writeEngine: 'PyMuPDF',
     pdf4qt: {
       available: false,
       envVar: PDF4QT_HOST_ENV,
     },
-    message: `PDF4QT host not configured. Set ${PDF4QT_HOST_ENV} to test the native core bridge.`,
+    message: `PDF4QT host not configured. Set ${PDF4QT_HOST_ENV} to enable native rendering.`,
   };
 }
 
