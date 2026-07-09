@@ -40,12 +40,18 @@ private:
         pdf::PDFObjectReference annotation;
     };
 
+    struct PreviewPageRotationRef {
+        pdf::PDFObjectReference page;
+        int originalRotation = 0;
+    };
+
     struct PreviewBatch {
         QString batchId;
         int operationCount = 0;
         int rectCount = 0;
         bool requiresRedaction = false;
         std::vector<PreviewAnnotationRef> annotations;
+        std::vector<PreviewPageRotationRef> pageRotations;
     };
 
     pdfviewer::PDFUndoRedoManager* undoRedoManager() const;

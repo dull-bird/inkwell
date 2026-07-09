@@ -1325,9 +1325,23 @@ export default function App() {
       return;
     }
     setBusy(true);
+    const documentId = activeDocument.id;
     try {
       const pageRanges = parsePageRanges(pageEditRanges) ?? ([[1, activeDocument.pageCount]] as [number, number][]);
       const rotations = buildRotationMap(activeDocument.pageCount, pageRanges, rotationDegrees);
+      const nativePreview = await previewAnnotationOperationsWithNativeBridge(
+        [{ type: 'rotatePages', rotations }],
+        {
+          documentId: activeDocument.path,
+          label: `Rotate pages in ${activeDocument.title}`,
+        },
+      );
+      if (nativePreview.handled) {
+        recordNativePreview(documentId, nativePreview, nativePreview.operationCount ?? Object.keys(rotations).length);
+        setStatus('已在 PDF4QT 中预览页面旋转，可撤回或应用保存。');
+        return;
+      }
+
       const result = await backendPost<FileOutputResponse>('/rotate', { path: activeDocument.path, rotations });
       setAgentOutput(result.output);
       await loadPdf(result.output);
@@ -1337,7 +1351,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [activeDocument, backendPost, loadPdf, pageEditRanges, rotationDegrees]);
+  }, [activeDocument, backendPost, loadPdf, pageEditRanges, recordNativePreview, rotationDegrees]);
 
   const deletePages = useCallback(async () => {
     if (!activeDocument?.pageCount) {

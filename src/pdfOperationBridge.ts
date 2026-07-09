@@ -96,6 +96,10 @@ export type NativeAnnotationOperation =
       pageIndices?: number[];
     }
   | {
+      type: 'rotatePages';
+      rotations: Record<number, number>;
+    }
+  | {
       type: 'comment';
       page: number;
       x: number;

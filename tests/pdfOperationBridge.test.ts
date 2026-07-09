@@ -232,6 +232,32 @@ test('previews text redaction marks through Qt PDF operation bridge', async () =
   assert.equal(batch.operations[0].source, 'user');
 });
 
+test('previews page rotation through Qt PDF operation bridge', async () => {
+  const calls: string[] = [];
+  const result = await previewAnnotationOperationsWithNativeBridge(
+    [{ type: 'rotatePages', rotations: { 0: 90, 2: 180 } }],
+    {
+      documentId: '/tmp/paper.pdf',
+      label: 'Rotate pages in paper.pdf',
+      getBridge: async () => ({
+        previewOperationsJson: async (batchJson) => {
+          calls.push(batchJson);
+          return JSON.stringify({ ok: true, batchId: 'rot1', operationCount: 2, rectCount: 0 });
+        },
+      }),
+    },
+  );
+
+  assert.deepEqual(result, { handled: true, operationCount: 2, rectCount: 0, batchId: 'rot1' });
+  assert.equal(calls.length, 1);
+  const batch = JSON.parse(calls[0]);
+  assert.equal(batch.documentId, '/tmp/paper.pdf');
+  assert.equal(batch.label, 'Rotate pages in paper.pdf');
+  assert.equal(batch.operations[0].type, 'rotatePages');
+  assert.deepEqual(batch.operations[0].rotations, { 0: 90, 2: 180 });
+  assert.equal(batch.operations[0].source, 'user');
+});
+
 test('falls back when Qt PDF operation bridge is unavailable', async () => {
   const result = await previewHighlightOperationsWithNativeBridge(operations, {
     documentId: '/tmp/paper.pdf',
@@ -496,6 +522,19 @@ test('App routes text redaction through native PDF4QT mark preview before backen
     /pageIndices/,
     'Native redaction preview should preserve the same page range scope as backend redaction.',
   );
+});
+
+test('App routes page rotation through native PDF4QT preview before backend output fallback', () => {
+  const appSource = readFileSync(resolve('src/App.tsx'), 'utf8');
+  const rotatePagesSource = sourceBlock(appSource, 'const rotatePages = useCallback', 'const deletePages = useCallback');
+
+  assertManualAnnotationNativeFirst(rotatePagesSource, "'/rotate'");
+  assert.match(
+    rotatePagesSource,
+    /type: 'rotatePages'/,
+    'Page rotation should update the PDF4QT document before backend output fallback.',
+  );
+  assert.match(rotatePagesSource, /buildRotationMap/);
 });
 
 function sourceBlock(source: string, startMarker: string, endMarker: string): string {

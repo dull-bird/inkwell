@@ -62,6 +62,9 @@ test('scaffolds Qt shell with PDF4QT editor as primary surface', () => {
   assert.match(bridgeSource, /perform\(pdf::PDFRedact::Options/);
   assert.match(bridgeSource, /siblingRedactedPath/);
   assert.match(bridgeSource, /QStringLiteral\("redacted"\)/);
+  assert.match(bridgeSource, /type == QStringLiteral\("rotatePages"\)/);
+  assert.match(bridgeSource, /setPageRotation/);
+  assert.match(bridgeSource, /markReset\(\)/);
   assert.match(bridgeSource, /createAnnotationStamp/);
   assert.match(bridgeSource, /imageStamp/);
   assert.match(bridgeSource, /QImage/);

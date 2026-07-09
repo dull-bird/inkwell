@@ -103,6 +103,39 @@ pdf::PDFReal readOpacity(const QJsonObject& operation)
     return std::clamp(value.toDouble(), 0.0, 1.0);
 }
 
+int pageRotationDegrees(pdf::PageRotation rotation)
+{
+    switch (rotation) {
+    case pdf::PageRotation::Rotate90:
+        return 90;
+    case pdf::PageRotation::Rotate180:
+        return 180;
+    case pdf::PageRotation::Rotate270:
+        return 270;
+    case pdf::PageRotation::None:
+        return 0;
+    }
+
+    return 0;
+}
+
+std::optional<pdf::PageRotation> pageRotationFromDegrees(int degrees)
+{
+    const int normalized = ((degrees % 360) + 360) % 360;
+    switch (normalized) {
+    case 0:
+        return pdf::PageRotation::None;
+    case 90:
+        return pdf::PageRotation::Rotate90;
+    case 180:
+        return pdf::PageRotation::Rotate180;
+    case 270:
+        return pdf::PageRotation::Rotate270;
+    default:
+        return std::nullopt;
+    }
+}
+
 void appendHighlightQuadrilateral(QPolygonF& quadrilaterals, const QRectF& rect)
 {
     quadrilaterals << rect.bottomLeft();
@@ -182,6 +215,11 @@ struct CreatedAnnotation {
     pdf::PDFObjectReference page;
     pdf::PDFObjectReference annotation;
     bool refreshAppearance = true;
+};
+
+struct PageRotationChange {
+    pdf::PDFObjectReference page;
+    int originalRotation = 0;
 };
 
 std::vector<QRectF> selectionRectsForItems(const pdf::PDFTextLayout& layout, const pdf::PDFTextSelectionItems& items)
@@ -454,6 +492,64 @@ std::vector<CreatedAnnotation> createRedactionAnnotations(
     }
 
     return annotations;
+}
+
+bool applyPageRotations(
+    pdf::PDFDocumentBuilder* builder,
+    const pdf::PDFCatalog* catalog,
+    const QJsonObject& operation,
+    std::vector<PageRotationChange>* pageRotations,
+    int* operationCount,
+    QString* errorMessage
+)
+{
+    const QJsonValue rotationsValue = operation.value(QStringLiteral("rotations"));
+    if (!rotationsValue.isObject()) {
+        *errorMessage = QStringLiteral("Page rotation operation must include rotations object.");
+        return false;
+    }
+
+    const QJsonObject rotations = rotationsValue.toObject();
+    if (rotations.isEmpty()) {
+        *errorMessage = QStringLiteral("Page rotation operation must include at least one page.");
+        return false;
+    }
+
+    const size_t pageCount = catalog->getPageCount();
+    for (auto it = rotations.constBegin(); it != rotations.constEnd(); ++it) {
+        bool ok = false;
+        const int pageIndex = it.key().toInt(&ok);
+        if (!ok || pageIndex < 0 || static_cast<size_t>(pageIndex) >= pageCount) {
+            *errorMessage = QStringLiteral("Page rotation operation page outside current document.");
+            return false;
+        }
+        if (!it.value().isDouble()) {
+            *errorMessage = QStringLiteral("Page rotation value must be numeric degrees.");
+            return false;
+        }
+
+        const std::optional<pdf::PageRotation> rotation = pageRotationFromDegrees(it.value().toInt());
+        if (!rotation) {
+            *errorMessage = QStringLiteral("Page rotation must be 0, 90, 180, or 270 degrees.");
+            return false;
+        }
+
+        const pdf::PDFPage* pageObject = catalog->getPage(static_cast<size_t>(pageIndex));
+        if (!pageObject) {
+            *errorMessage = QStringLiteral("Page rotation operation page unavailable.");
+            return false;
+        }
+
+        const pdf::PDFObjectReference page = pageObject->getPageReference();
+        pageRotations->push_back(PageRotationChange{
+            page,
+            pageRotationDegrees(pageObject->getPageRotation()),
+        });
+        builder->setPageRotation(page, *rotation);
+        ++(*operationCount);
+    }
+
+    return true;
 }
 
 bool setImageStampAppearance(
@@ -838,6 +934,31 @@ QString InkwellPdfBridge::previewOperationsJson(const QString& batchJson)
 
         const QJsonObject operation = operationValue.toObject();
         const QString type = operation.value(QStringLiteral("type")).toString();
+        if (type == QStringLiteral("rotatePages")) {
+            QString errorMessage;
+            std::vector<PageRotationChange> pageRotations;
+            int rotationOperationCount = 0;
+            if (!applyPageRotations(
+                    modifier.getBuilder(),
+                    catalog,
+                    operation,
+                    &pageRotations,
+                    &rotationOperationCount,
+                    &errorMessage
+                )) {
+                return parseErrorJson(errorMessage);
+            }
+
+            for (const PageRotationChange& rotation : pageRotations) {
+                previewBatch.pageRotations.push_back(PreviewPageRotationRef{
+                    rotation.page,
+                    rotation.originalRotation,
+                });
+            }
+            previewBatch.operationCount += rotationOperationCount;
+            continue;
+        }
+
         if (type == QStringLiteral("watermark")) {
             QString errorMessage;
             const std::vector<CreatedAnnotation> annotations = createWatermarkAnnotations(
@@ -992,7 +1113,11 @@ QString InkwellPdfBridge::previewOperationsJson(const QString& batchJson)
         return parseErrorJson(QStringLiteral("Text markup preview did not produce annotations."));
     }
 
-    modifier.markAnnotationsChanged();
+    if (!previewBatch.pageRotations.empty()) {
+        modifier.markReset();
+    } else {
+        modifier.markAnnotationsChanged();
+    }
     if (!modifier.finalize()) {
         return parseErrorJson(QStringLiteral("PDF4QT did not produce modified document for requested preview."));
     }
@@ -1142,15 +1267,27 @@ QString InkwellPdfBridge::clearPreviewJson(const QString& batchId)
     pdf::PDFDocumentModifier modifier(sourceDocument);
     int operationCount = 0;
     int rectCount = 0;
+    bool resetPages = false;
     for (const PreviewBatch& previewBatch : batchesToClear) {
         operationCount += previewBatch.operationCount;
         rectCount += previewBatch.rectCount;
         for (const PreviewAnnotationRef& annotation : previewBatch.annotations) {
             modifier.getBuilder()->removeAnnotation(annotation.page, annotation.annotation);
         }
+        for (const PreviewPageRotationRef& rotation : previewBatch.pageRotations) {
+            const std::optional<pdf::PageRotation> originalRotation = pageRotationFromDegrees(rotation.originalRotation);
+            if (originalRotation) {
+                modifier.getBuilder()->setPageRotation(rotation.page, *originalRotation);
+                resetPages = true;
+            }
+        }
     }
 
-    modifier.markAnnotationsChanged();
+    if (resetPages) {
+        modifier.markReset();
+    } else {
+        modifier.markAnnotationsChanged();
+    }
     if (modifier.finalize()) {
         pdf::PDFModifiedDocument modifiedDocument(modifier.getDocument(), nullptr, modifier.getFlags());
         programController->onDocumentModified(std::move(modifiedDocument));
