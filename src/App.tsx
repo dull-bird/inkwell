@@ -1128,20 +1128,45 @@ export default function App() {
       beginPlacement('image');
       return;
     }
-    setBusy(true);
-    const documentId = activeDocument.id;
-    try {
-      const result = await backendPost<FileOutputResponse>(
-        '/insert-image',
-        buildInsertImageRequest(
-          activeDocument.path,
-          commentTarget.page,
-          commentTarget.x,
-          commentTarget.y,
-          imageFilePath,
-          imageDimensions,
-        ),
-      );
+  setBusy(true);
+  const documentId = activeDocument.id;
+  try {
+    const request = buildInsertImageRequest(
+      activeDocument.path,
+      commentTarget.page,
+      commentTarget.x,
+      commentTarget.y,
+      imageFilePath,
+      imageDimensions,
+    );
+    const nativePreview = await previewAnnotationOperationsWithNativeBridge(
+      [
+        {
+          type: 'imageStamp',
+          page: request.page,
+          x: request.x,
+          y: request.y,
+          imagePath: request.image_path,
+          author: 'Sparrow',
+          width: request.width,
+          height: request.height,
+        },
+      ],
+      {
+        documentId: activeDocument.path,
+        label: `Image in ${activeDocument.title}`,
+      },
+    );
+    if (nativePreview.handled) {
+      recordNativePreview(documentId, nativePreview, nativePreview.operationCount ?? 1);
+      clearPlacementTarget(documentId);
+      setStatus('已在 PDF4QT 中预览图片标注，可撤回或应用保存。');
+      return;
+    }
+    const result = await backendPost<FileOutputResponse>(
+      '/insert-image',
+      request,
+    );
       setAgentOutput(result.output);
       await loadPdf(result.output);
       clearPlacementTarget(documentId);
@@ -1158,10 +1183,11 @@ export default function App() {
     clearPlacementTarget,
     commentTarget,
     imageDimensions,
-    imageFilePath,
-    loadPdf,
-    placementMode,
-  ]);
+  imageFilePath,
+  loadPdf,
+  placementMode,
+  recordNativePreview,
+]);
 
   const addTextMarkup = useCallback(
     async (kind: TextMarkupKind) => {

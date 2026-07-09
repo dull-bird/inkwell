@@ -369,6 +369,18 @@ test('App routes manual annotations through native preview before backend output
   assertManualAnnotationNativeFirst(addShapeSource, "'/shape'");
 });
 
+test('App routes image insertion through native image stamp preview before backend output fallback', () => {
+  const appSource = readFileSync(resolve('src/App.tsx'), 'utf8');
+  const addPdfImageSource = sourceBlock(appSource, 'const addPdfImage = useCallback', 'const addTextMarkup = useCallback');
+
+  assertManualAnnotationNativeFirst(addPdfImageSource, "'/insert-image'");
+  assert.match(
+    addPdfImageSource,
+    /type: 'imageStamp'/,
+    'Inserted images should preview as image-backed Stamp annotations in PDF4QT.',
+  );
+});
+
 test('App routes typed signature through native free text preview before backend output fallback', () => {
   const appSource = readFileSync(resolve('src/App.tsx'), 'utf8');
   const addTypedSignatureSource = sourceBlock(
