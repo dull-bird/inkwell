@@ -54,6 +54,10 @@ test('scaffolds Qt shell with PDF4QT editor as primary surface', () => {
   assert.match(bridgeSource, /TextAnnotationIcon::Comment/);
   assert.match(bridgeSource, /createAnnotationFreeText/);
   assert.match(bridgeSource, /createAnnotationStamp/);
+  assert.match(bridgeSource, /imageStamp/);
+  assert.match(bridgeSource, /QImage/);
+  assert.match(bridgeSource, /drawImage/);
+  assert.match(bridgeSource, /setImageStampAppearance/);
   assert.match(bridgeSource, /createAnnotationSquare/);
   assert.match(bridgeSource, /createAnnotationCircle/);
   assert.match(bridgeSource, /createAnnotationLine/);

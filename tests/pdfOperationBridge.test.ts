@@ -119,7 +119,17 @@ test('previews comment free text stamp and shape annotations through Qt PDF oper
     [
       { type: 'comment', page: 0, x: 64, y: 120, text: 'Please confirm', author: 'Reviewer' },
       { type: 'freeText', page: 0, x: 72, y: 144, text: 'Needs review', author: 'Reviewer' },
-      { type: 'stamp', page: 0, x: 120, y: 180, stamp: 'Approved', author: 'Reviewer' },
+    { type: 'stamp', page: 0, x: 120, y: 180, stamp: 'Approved', author: 'Reviewer' },
+    {
+      type: 'imageStamp',
+      page: 0,
+      x: 132,
+      y: 210,
+      imagePath: '/tmp/signature.png',
+      width: 180,
+      height: 60,
+      author: 'Reviewer',
+    },
       {
         type: 'shape',
         page: 0,
@@ -139,13 +149,13 @@ test('previews comment free text stamp and shape annotations through Qt PDF oper
       getBridge: async () => ({
         previewOperationsJson: async (batchJson) => {
           calls.push(batchJson);
-          return JSON.stringify({ ok: true, batchId: 'b5', operationCount: 4, rectCount: 0 });
+          return JSON.stringify({ ok: true, batchId: 'b5', operationCount: 5, rectCount: 0 });
         },
       }),
     },
   );
 
-  assert.deepEqual(result, { handled: true, operationCount: 4, rectCount: 0, batchId: 'b5' });
+  assert.deepEqual(result, { handled: true, operationCount: 5, rectCount: 0, batchId: 'b5' });
   assert.equal(calls.length, 1);
 
   const batch = JSON.parse(calls[0]);
@@ -157,9 +167,13 @@ test('previews comment free text stamp and shape annotations through Qt PDF oper
   assert.equal(batch.operations[1].text, 'Needs review');
   assert.equal(batch.operations[2].type, 'stamp');
   assert.equal(batch.operations[2].stamp, 'Approved');
-  assert.equal(batch.operations[3].type, 'shape');
-  assert.equal(batch.operations[3].kind, 'rectangle');
-  assert.equal(batch.operations[3].strokeWidth, 2);
+  assert.equal(batch.operations[3].type, 'imageStamp');
+  assert.equal(batch.operations[3].imagePath, '/tmp/signature.png');
+  assert.equal(batch.operations[3].width, 180);
+  assert.equal(batch.operations[3].height, 60);
+  assert.equal(batch.operations[4].type, 'shape');
+  assert.equal(batch.operations[4].kind, 'rectangle');
+  assert.equal(batch.operations[4].strokeWidth, 2);
 });
 
 test('falls back when Qt PDF operation bridge is unavailable', async () => {
@@ -368,6 +382,22 @@ test('App routes typed signature through native free text preview before backend
     addTypedSignatureSource,
     /type: 'freeText'/,
     'Typed signatures should preview as standard FreeText annotations in PDF4QT.',
+  );
+});
+
+test('App routes image signature through native image stamp preview before backend output fallback', () => {
+  const appSource = readFileSync(resolve('src/App.tsx'), 'utf8');
+  const addImageSignatureSource = sourceBlock(
+    appSource,
+    'const addImageSignature = useCallback',
+    'const exportNativeAgentSession = useCallback',
+  );
+
+  assertManualAnnotationNativeFirst(addImageSignatureSource, "'/image-signature'");
+  assert.match(
+    addImageSignatureSource,
+    /type: 'imageStamp'/,
+    'Image signatures should preview as image-backed Stamp annotations in PDF4QT.',
   );
 });
 

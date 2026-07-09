@@ -1837,21 +1837,46 @@ export default function App() {
       beginPlacement('image-signature');
       return;
     }
-    setBusy(true);
-    const documentId = activeDocument.id;
-    try {
-      const result = await backendPost<FileOutputResponse>(
-        '/image-signature',
-        buildImageSignatureRequest(
-          activeDocument.path,
-          commentTarget.page,
-          commentTarget.x,
-          commentTarget.y,
-          signatureImagePath,
-          signatureImageDimensions,
-          signatureText || 'Sparrow',
-        ),
-      );
+  setBusy(true);
+  const documentId = activeDocument.id;
+  try {
+    const request = buildImageSignatureRequest(
+      activeDocument.path,
+      commentTarget.page,
+      commentTarget.x,
+      commentTarget.y,
+      signatureImagePath,
+      signatureImageDimensions,
+      signatureText || 'Sparrow',
+    );
+    const nativePreview = await previewAnnotationOperationsWithNativeBridge(
+      [
+        {
+          type: 'imageStamp',
+          page: request.page,
+          x: request.x,
+          y: request.y,
+          imagePath: request.image_path,
+          author: request.signer,
+          width: request.width,
+          height: request.height,
+        },
+      ],
+      {
+        documentId: activeDocument.path,
+        label: `Image signature in ${activeDocument.title}`,
+      },
+    );
+    if (nativePreview.handled) {
+      recordNativePreview(documentId, nativePreview, nativePreview.operationCount ?? 1);
+      clearPlacementTarget(documentId);
+      setStatus('已在 PDF4QT 中预览图片签名，可撤回或应用保存。');
+      return;
+    }
+    const result = await backendPost<FileOutputResponse>(
+      '/image-signature',
+      request,
+    );
       setAgentOutput(result.output);
       await loadPdf(result.output);
       clearPlacementTarget(documentId);
@@ -1868,9 +1893,10 @@ export default function App() {
     clearPlacementTarget,
     commentTarget,
     loadPdf,
-    placementMode,
-    signatureImageDimensions,
-    signatureImagePath,
+  placementMode,
+  recordNativePreview,
+  signatureImageDimensions,
+  signatureImagePath,
     signatureText,
   ]);
 

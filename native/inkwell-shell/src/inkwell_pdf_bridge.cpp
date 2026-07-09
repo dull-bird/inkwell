@@ -20,9 +20,11 @@
 #include <QColor>
 #include <QDir>
 #include <QFileInfo>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPainter>
 #include <QPointF>
 #include <QPolygonF>
 #include <QRectF>
@@ -120,6 +122,7 @@ bool isSupportedAnnotationOperationType(const QString& type)
     return type == QStringLiteral("comment")
         || type == QStringLiteral("freeText")
         || type == QStringLiteral("stamp")
+        || type == QStringLiteral("imageStamp")
         || type == QStringLiteral("shape");
 }
 
@@ -176,6 +179,7 @@ struct TextMarkupHit {
 struct CreatedAnnotation {
     pdf::PDFObjectReference page;
     pdf::PDFObjectReference annotation;
+    bool refreshAppearance = true;
 };
 
 std::vector<QRectF> selectionRectsForItems(const pdf::PDFTextLayout& layout, const pdf::PDFTextSelectionItems& items)
@@ -289,6 +293,94 @@ pdf::PDFObjectReference createTextMarkupAnnotation(
     return builder->createAnnotationHighlight(page, quadrilaterals, color);
 }
 
+bool setImageStampAppearance(
+    pdf::PDFDocumentBuilder* builder,
+    pdf::PDFObjectReference annotation,
+    const QRectF& annotationRect,
+    const QString& imagePath,
+    QString* errorMessage
+)
+{
+    const QImage image(imagePath);
+    if (image.isNull()) {
+        *errorMessage = QStringLiteral("Image stamp annotation must reference a readable image file.");
+        return false;
+    }
+
+    pdf::PDFContentStreamBuilder contentBuilder(annotationRect.size(), pdf::PDFContentStreamBuilder::CoordinateSystem::Qt);
+    QPainter* painter = contentBuilder.begin();
+    if (!painter) {
+        *errorMessage = QStringLiteral("PDF4QT could not create image stamp appearance stream.");
+        return false;
+    }
+
+    QSizeF imageSize(image.size());
+    imageSize.scale(annotationRect.size(), Qt::KeepAspectRatio);
+    const QRectF imageRect(
+        QPointF(
+            (annotationRect.width() - imageSize.width()) / 2.0,
+            (annotationRect.height() - imageSize.height()) / 2.0
+        ),
+        imageSize
+    );
+    painter->setRenderHint(QPainter::SmoothPixmapTransform, true);
+    painter->drawImage(imageRect, image);
+
+    const pdf::PDFContentStreamBuilder::ContentStream contentStream = contentBuilder.end(painter);
+    if (!contentStream.pageObject.isValid()) {
+        *errorMessage = QStringLiteral("PDF4QT produced invalid image stamp appearance stream.");
+        return false;
+    }
+
+    std::vector<pdf::PDFObject> copiedObjects = builder->copyFrom(
+        { contentStream.resources, contentStream.contents },
+        contentStream.document.getStorage(),
+        true
+    );
+    if (copiedObjects.size() != 2 || !copiedObjects[0].isReference() || !copiedObjects[1].isReference()) {
+        *errorMessage = QStringLiteral("PDF4QT could not copy image stamp appearance resources.");
+        return false;
+    }
+
+    const pdf::PDFObjectReference resourcesReference = copiedObjects[0].getReference();
+    const pdf::PDFObjectReference formReference = copiedObjects[1].getReference();
+    const QRectF appearanceBox(QPointF(0.0, 0.0), annotationRect.size());
+
+    pdf::PDFObjectFactory formFactory;
+    formFactory.beginDictionary();
+    formFactory.beginDictionaryItem("Type");
+    formFactory << pdf::WrapName("XObject");
+    formFactory.endDictionaryItem();
+    formFactory.beginDictionaryItem("Subtype");
+    formFactory << pdf::WrapName("Form");
+    formFactory.endDictionaryItem();
+    formFactory.beginDictionaryItem("BBox");
+    formFactory << appearanceBox;
+    formFactory.endDictionaryItem();
+    formFactory.beginDictionaryItem("Resources");
+    formFactory << resourcesReference;
+    formFactory.endDictionaryItem();
+    formFactory.endDictionary();
+    builder->mergeTo(formReference, formFactory.takeObject());
+
+    pdf::PDFObjectFactory annotationFactory;
+    annotationFactory.beginDictionary();
+    annotationFactory.beginDictionaryItem("Rect");
+    annotationFactory << annotationRect;
+    annotationFactory.endDictionaryItem();
+    annotationFactory.beginDictionaryItem("AP");
+    annotationFactory.beginDictionary();
+    annotationFactory.beginDictionaryItem("N");
+    annotationFactory << formReference;
+    annotationFactory.endDictionaryItem();
+    annotationFactory.endDictionary();
+    annotationFactory.endDictionaryItem();
+    annotationFactory.endDictionary();
+    builder->mergeTo(annotation, annotationFactory.takeObject());
+
+    return true;
+}
+
 std::optional<CreatedAnnotation> createStandardAnnotation(
     pdf::PDFDocumentBuilder* builder,
     const pdf::PDFCatalog* catalog,
@@ -373,6 +465,31 @@ std::optional<CreatedAnnotation> createStandardAnnotation(
             page,
             builder->createAnnotationStamp(page, *rect, readStampType(stamp), title, QStringLiteral("Stamp"), stamp),
         };
+    }
+
+    if (type == QStringLiteral("imageStamp")) {
+        const QString imagePath = operation.value(QStringLiteral("imagePath")).toString().trimmed();
+        if (imagePath.isEmpty()) {
+            *errorMessage = QStringLiteral("Image stamp annotation must include imagePath.");
+            return std::nullopt;
+        }
+        const std::optional<QRectF> rect = readPositionRectangle(operation, 180.0, 60.0);
+        if (!rect) {
+            *errorMessage = QStringLiteral("Image stamp annotation must include numeric x, y, width, height values.");
+            return std::nullopt;
+        }
+        const pdf::PDFObjectReference annotation = builder->createAnnotationStamp(
+            page,
+            *rect,
+            pdf::Stamp::Approved,
+            title,
+            QStringLiteral("Image signature"),
+            imagePath
+        );
+        if (!setImageStampAppearance(builder, annotation, *rect, imagePath, errorMessage)) {
+            return std::nullopt;
+        }
+        return CreatedAnnotation{ page, annotation, false };
     }
 
     if (type == QStringLiteral("shape")) {
@@ -559,7 +676,9 @@ QString InkwellPdfBridge::previewOperationsJson(const QString& batchJson)
             if (!created) {
                 return parseErrorJson(errorMessage);
             }
-            modifier.getBuilder()->updateAnnotationAppearanceStreams(created->annotation);
+            if (created->refreshAppearance) {
+                modifier.getBuilder()->updateAnnotationAppearanceStreams(created->annotation);
+            }
             previewBatch.annotations.push_back(PreviewAnnotationRef{ created->page, created->annotation });
             ++previewBatch.operationCount;
             continue;

@@ -103,20 +103,30 @@ export type NativeAnnotationOperation =
       width?: number;
       height?: number;
     }
-  | {
-      type: 'stamp';
-      page: number;
-      x: number;
-      y: number;
-      stamp: string;
-      author?: string;
-      width?: number;
-      height?: number;
-    }
-  | {
-      type: 'shape';
-      page: number;
-      x: number;
+| {
+type: 'stamp';
+page: number;
+x: number;
+y: number;
+stamp: string;
+author?: string;
+width?: number;
+height?: number;
+}
+| {
+type: 'imageStamp';
+page: number;
+x: number;
+y: number;
+imagePath: string;
+author?: string;
+width: number;
+height: number;
+}
+| {
+type: 'shape';
+page: number;
+x: number;
       y: number;
       kind: 'rectangle' | 'ellipse' | 'line';
       width: number;
